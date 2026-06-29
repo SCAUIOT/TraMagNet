@@ -1,0 +1,15 @@
+# DnCNN baseline (DnCNN baseline)
+model: DnCNN
+data_root: data1
+epochs: 500
+batch_size: 32
+lr: 1.0e-4
+seed: 42
+cv_folds: 5
+segment_length: 1024
+band: all
+normalization:
+  match_noisy_scale_to_reference: false
+  zscore_using_reference: false
+  mode: noisy_sample
+loss: l1

@@ -1,0 +1,23 @@
+# TraMagNet (MagGAN) — main paper model
+model: TraMagNet
+data_root: data1
+data_roots: data1,data3,data4
+pool_tag: data134
+split_manifest: splits/ztest5_data134_manifest.json
+epochs: 2000
+batch_size: 32
+lr_g: 2.0e-5
+lr_d: 2.0e-5
+seed: 42
+cv_folds: 5
+segment_length: 1024
+band: all
+normalization:
+  match_noisy_scale_to_reference: false
+  zscore_using_reference: false
+  mode: noisy_sample
+loss: mse_time
+loss_l1_weight: 0.4
+loss_stft_weight: 0.6
+lambda_sup: 1.0
+subway_dual_channels: false

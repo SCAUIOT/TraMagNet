@@ -1,0 +1,3 @@
+# Module 3 DnCNN training; optional rich for live "DnCNN training" dashboard
+torch
+rich>=13.7

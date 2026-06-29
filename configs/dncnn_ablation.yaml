@@ -1,0 +1,17 @@
+# DnCNN-only ablation (no UNet / no GAN)
+model: DnCNN-only
+data_roots: data1,data3,data4
+pool_tag: data134
+split_manifest: splits/ztest5_data134_manifest.json
+epochs: 2000
+batch_size: 32
+lr: 2.0e-5
+seed: 42
+cv_folds: 5
+normalization:
+  match_noisy_scale_to_reference: false
+  zscore_using_reference: false
+  mode: noisy_sample
+loss: mse_time
+loss_mse_weight: 5.0
+loss_stft_weight: 5.0
