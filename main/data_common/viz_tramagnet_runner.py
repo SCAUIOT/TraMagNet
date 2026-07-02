@@ -2,7 +2,7 @@
 TraMagNet visualization/export (invoked by repo-root ``visualize_data.py tramagnet``).
 
 Weights from ``TraMagNet`` training (``checkpoint`` contains ``generator``); ``UNet`` defined in ``TraMagNet/models/unet.py``.
-Data and preprocessing align with the ``cnn`` pipeline via ``TraMagNet/data/our_data_dataset.py`` (``cnn`` is not added to ``sys.path``):
+Data and preprocessing align with the ``dncnn`` pipeline via ``TraMagNet/data/our_data_dataset.py`` (``dncnn`` is not added to ``sys.path``):
 ``OurDataDataset`` + ``resample_mode`` / ``split_round`` / ``strict_all_bands`` /
 ``match_noisy_scale_to_reference`` / ``zscore_using_reference``; dual-channel export branch for four-column ``+subway`` files.
 """
@@ -27,7 +27,6 @@ if str(_REPO) not in sys.path:
 sys.path.insert(0, str(_TRAMAGNET))
 
 from data_common.cv_ensemble import add_cv_ensemble_arguments
-from data_common.viz_ckpt_resolve import add_viz_job_arguments
 from data_common.ensemble_infer import load_unet_ensemble, unet_ensemble_forward
 from data_common.viz_ckpt_resolve import resolve_viz_inference_plan
 from data_common.viz_split import (
@@ -116,8 +115,8 @@ def _mean_std(x: torch.Tensor, *, eps: float = 1e-6) -> tuple[torch.Tensor, torc
     return mu, sig
 
 
-def _affine_match_mean_std(noisy: torch.Tensor, reference: torch.Tensor, *, eps: float = 1e-6) -> torch.Tensor:
-    mu_c, sig_c = _mean_std(reference, eps=eps)
+def _affine_match_mean_std(noisy: torch.Tensor, clean: torch.Tensor, *, eps: float = 1e-6) -> torch.Tensor:
+    mu_c, sig_c = _mean_std(clean, eps=eps)
     mu_n, sig_n = _mean_std(noisy, eps=eps)
     return (noisy - mu_n) * (sig_c / sig_n) + mu_c
 
@@ -161,7 +160,7 @@ def _tramagnet_mp_init(pack: dict) -> None:
     os.environ.setdefault("OMP_NUM_THREADS", "1")
     os.environ.setdefault("MKL_NUM_THREADS", "1")
     sys.path.insert(0, pack["repo"])
-    sys.path.insert(0, pack["fourunet"])
+    sys.path.insert(0, pack["tramagnet"])
 
     import torch as _t
 
@@ -261,7 +260,7 @@ def _tramagnet_mp_run_chunk(chunk_indices: list[int], infer_bs: int) -> int:
                 c.squeeze().detach().cpu().numpy(),
                 n.squeeze().detach().cpu().numpy(),
                 d.squeeze().detach().cpu().numpy(),
-                title=f"{k} (band={band}) — reference vs noisy vs denoised",
+                title=f"{k} (band={band}) — clean vs noisy vs denoised",
                 figsize=(12.0, 4.0),
                 dpi=160,
                 xlabel="Sample",
@@ -298,6 +297,7 @@ def _run_one_split(
     filename_suffix: str = "",
 ) -> None:
     from data.our_data_dataset import OurDataConfig, OurDataDataset
+    from data_common.flat_pairing import sample_id_from_reference_path
     from data_common.pair_specs import list_pair_specs
     from data_common.txt_io import (
         pad_or_resample_to_length,
@@ -311,7 +311,7 @@ def _run_one_split(
     out_tag = pool_plan.output_tag
     first_root = pool_plan.targets[0].data_root
     plan = resolve_viz_inference_plan(
-        args, repo=_REPO, data_root=first_root, data_tag=out_tag, nn_dir=_5GAN
+        args, repo=_REPO, data_root=first_root, data_tag=out_tag, nn_dir=_TRAMAGNET
     )
     ckpt_paths = list(plan.ckpt_paths)
     is_ensemble = plan.mode == "ensemble"
@@ -327,7 +327,7 @@ def _run_one_split(
         flush=True,
     )
 
-    _out_base = Path("output") / _5GAN.name / out_tag
+    _out_base = Path("output") / _TRAMAGNET.name / out_tag
     user_img_dir = Path(args.output_dir) if args.output_dir else None
     user_res_dir = Path(args.result_dir) if args.result_dir else None
     if clear_outputs and pool_plan.is_pooled:
@@ -392,7 +392,7 @@ def _run_one_split(
         noisy_dir = root_p / args.noisy_subdir
         has_subway_dual = False
         if noisy_dir.is_dir():
-            for p in noisy_dir.glob("*+subway.txt"):
+            for p in noisy_dir.glob("sample*.txt"):
                 if subway_noisy_has_four_value_columns(p):
                     has_subway_dual = True
                     break
@@ -436,6 +436,7 @@ def _run_one_split(
                     shuffle_split=bool(args.shuffle_split),
                     cv_folds=int(args.cv_folds),
                     cv_fold=int(args.cv_fold),
+                    data_root=root_p,
                 )
             total = len(specs)
             stride = max(1, int(args.stride))
@@ -447,11 +448,11 @@ def _run_one_split(
                 sp = specs[j]
                 if not spec_in_allowed_keys(sp, allowed_keys):
                     continue
-                m = re.match(r"^sample(\d+)_", Path(sp.reference_path).name, re.IGNORECASE)
-                if m and chosen_sids and (m.group(1) not in chosen_sids):
+                sid = sample_id_from_reference_path(sp.reference_path, data_root=root_p)
+                if sid and chosen_sids and sid not in chosen_sids:
                     continue
                 noisy_path = Path(sp.noisy_path)
-                if not (noisy_path.name.endswith("+subway.txt") and subway_noisy_has_four_value_columns(noisy_path)):
+                if not subway_noisy_has_four_value_columns(noisy_path):
                     continue
 
                 c_a_s, _ = read_one_file_with_meta(sp.reference_path, value_column=2)
@@ -503,7 +504,7 @@ def _run_one_split(
 
                 stem = noisy_path.stem
                 stem_out = prefixed_export_stem(stem, dataset_tag=None, filename_suffix=filename_suffix)
-                title = f"{stem} (subway dual) — reference vs noisy vs denoised"
+                title = f"{stem} (subway dual) — clean vs noisy vs denoised"
                 save_dual_column_triplet_figure(
                     img_dir / f"{stem_out}.jpg",
                     reference_a_z.squeeze().detach().cpu().numpy(),
@@ -565,7 +566,7 @@ def _run_one_split(
                 )
             pack = {
                 "repo": str(_REPO.resolve()),
-                "fourunet": str(_4UNET.resolve()),
+                "tramagnet": str(_TRAMAGNET.resolve()),
                 "ensemble": is_ensemble,
                 "ckpt_path": str(ckpt_path.resolve()),
                 "ckpt_paths": [str(p.resolve()) for p in ckpt_paths],
@@ -622,7 +623,7 @@ def _run_one_split(
                     c.squeeze().detach().cpu().numpy(),
                     n.squeeze().detach().cpu().numpy(),
                     d.squeeze().detach().cpu().numpy(),
-                    title=f"{k} (band={args.band}) — reference vs noisy vs denoised",
+                    title=f"{k} (band={args.band}) — clean vs noisy vs denoised",
                     figsize=(12.0, 4.0),
                     dpi=160,
                     xlabel="Sample",
@@ -667,13 +668,12 @@ def main() -> int:
         dest="data_root",
         help="Data root; data134 selects pooled mode (data1+data3+data4).",
     )
-    p.add_argument("--reference-subdir", type=str, default="reference_signal")
+    p.add_argument("--reference-subdir", type=str, default="reference_signal", dest="reference_subdir")
     p.add_argument("--noisy-subdir", type=str, default="noise_signal")
     p.add_argument("--band", type=str, default="all", choices=("low", "middle", "high", "all"))
     add_viz_split_arguments(p)
     add_viz_pooled_arguments(p)
     add_cv_ensemble_arguments(p)
-    add_viz_job_arguments(p)
     p.epilog = (
         "Minimal usage: python visualize_data.py tramagnet --data-root data1\n"
         "Pooled: python visualize_data.py tramagnet --data-root data134 --split test\n"
@@ -686,21 +686,21 @@ def main() -> int:
         type=str,
         default="resample_linear",
         choices=("pad_edge", "pad_zero", "resample_linear"),
-        help="Same as train_dncnn / OurDataDataset.",
+        help="Same as train_DnCNN / OurDataDataset.",
     )
     p.add_argument(
         "--match-noisy-scale",
         action=argparse.BooleanOptionalAction,
         default=True,
         dest="match_noisy_scale",
-        help="Same as train_dncnn (default on).",
+        help="Same as train_DnCNN (default on).",
     )
     p.add_argument(
         "--zscore-using-reference",
         action=argparse.BooleanOptionalAction,
         default=True,
         dest="zscore_using_reference",
-        help="Same as train_dncnn (default on).",
+        help="Same as train_DnCNN (default on).",
     )
     p.add_argument("--device", type=str, default="cpu", choices=("cpu", "cuda"))
     p.add_argument(

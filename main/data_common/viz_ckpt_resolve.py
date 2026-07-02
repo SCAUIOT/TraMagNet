@@ -2,20 +2,38 @@
 
 from __future__ import annotations
 
-import argparse
 from pathlib import Path
 
 from data_common.cv_ensemble import (
     InferenceCkptPlan,
     cv_ensemble_folds_from_args,
     resolve_inference_ckpts,
+    runs_base_has_any_ckpt,
 )
 from data_common.viz_export_workers import checkpoint_run_candidates
-from data_common.ztest5_paths import extend_run_candidates_with_ztest5, normalize_cv_runs_base
+
+
+def normalize_cv_runs_base(path: Path) -> Path:
+    """
+    Normalize user path to K-fold weight root (``runs`` dir with ``fold_*`` or single ``best.pt``).
+
+    - ``…/<pool>/runs`` → unchanged when it already contains ``fold_0``
+    - ``…/<pool>`` → ``…/<pool>/runs`` when ``runs/fold_0`` exists
+    """
+    p = Path(path)
+    inner = p / "runs"
+    if inner.is_dir():
+        if (inner / "fold_0").is_dir() or runs_base_has_any_ckpt(inner, cv_folds=0):
+            return inner
+    if (p / "fold_0").is_dir() or runs_base_has_any_ckpt(p, cv_folds=0):
+        return p
+    if inner.is_dir():
+        return inner
+    return p
 
 
 def resolve_viz_inference_plan(
-    args: argparse.Namespace,
+    args,
     *,
     repo: Path,
     data_root: str,
@@ -25,9 +43,6 @@ def resolve_viz_inference_plan(
     runs_dir_arg = getattr(args, "runs_dir", None)
     runs_dir: Path | None = None
     ckpt_prefer = str(getattr(args, "ckpt", "last"))
-    job_name = getattr(args, "job_name", None)
-    if job_name is not None:
-        job_name = str(job_name).strip() or None
 
     if runs_dir_arg:
         runs_dir = Path(str(runs_dir_arg))
@@ -41,15 +56,6 @@ def resolve_viz_inference_plan(
     cv_folds = nf if use_ensemble else 5
 
     candidates = checkpoint_run_candidates(repo=repo, data_tag=data_tag, nn_dir=nn_dir)
-    candidates = extend_run_candidates_with_ztest5(
-        candidates,
-        repo=repo,
-        data_tag=data_tag,
-        nn_dir=nn_dir,
-        job_name=job_name,
-        cv_folds=cv_folds,
-        ckpt_prefer=ckpt_prefer,
-    )
     return resolve_inference_ckpts(
         repo=repo,
         data_root=data_root,
@@ -58,17 +64,4 @@ def resolve_viz_inference_plan(
         ckpt_prefer=ckpt_prefer,
         cv_folds=cv_folds,
         use_ensemble=use_ensemble,
-    )
-
-
-def add_viz_job_arguments(parser: argparse.ArgumentParser) -> None:
-    """ztest5 grid job dirs (``data3_4u_msestft_2_8_randz_e1000``, etc.)."""
-    g = parser.add_argument_group("ztest5 / job directory")
-    g.add_argument(
-        "--job-name",
-        type=str,
-        default=None,
-        dest="job_name",
-        metavar="DIR",
-        help="ztest5 job dir name (e.g. data3_4u_msestft_2_8_randz_e1000); if omitted, auto-pick weighted job with largest _e in grid.",
     )

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Batch SNR evaluation for training directories produced by ``ztest5.py`` etc. (each subdir has ``best.pt`` / ``last.pt``) via ``--mode runs-root``.
+Batch SNR evaluation for checkpoint directories (``--mode runs-root``) and exported txt results (``--mode report``).
 
 Uses in-repo ``TraMagNet`` only to load ``OurDataDataset``, ``UNet`` (checkpoint format must match).
 
@@ -8,33 +8,17 @@ Uses in-repo ``TraMagNet`` only to load ``OurDataDataset``, ``UNet`` (checkpoint
 
 - **Forward pass**: same as ``visualize_data.py`` → ``viz_tramagnet_runner`` — ``model(noisy,z)`` on batch ``noisy``,
   yielding tensor with **same semantics** as ``d.squeeze()`` when exporting result txt (not written to disk).
-- **Three SNR values**: ``reference`` / ``noisy`` both read from **txt** (same as ``evaluate_methods_on_data1``); z-domain denoised
+- **Three SNR values**: ``clean`` / ``noisy`` both read from **txt** (same as ``evaluate_methods_on_data1``); z-domain denoised
   ``den_1024`` is forward ``pred``, denormalized via ``eval_metrics.snr_triplets_for_segment_like_evaluate_methods_on_data1``
   to compute ``SNR_time`` / ``SNR_freq`` / ``SNR_joint`` (**not** dataloader ``n_z*σ+μ`` as noisy).
-  See that function's docstring for full math.
 
-**Default (``--mode report``)**: two output sections —
+**Default (``--mode report``)**: summarize **txt results** under ``output/<method>/…`` and print three SNR per method.
 
-1. Summarize **txt results** under ``output/<method>/…`` and print three SNR per method.
-2. If ``TraMagNet/output/ztest5_TraMagNet_grid`` / ``TraMagNet/output/ztest5_TraMagNet_grid`` exists (or ``--ztest5-*-runs-root`` specified),
-   also print same-definition three-SNR table for **max epoch** subdir checkpoints (``--split`` applies to this section).
+**``--mode runs-root``**: evaluate checkpoint table under a single ``--runs-root`` (e.g. ``TraMagNet/output/data134/runs``).
 
-**``--mode runs-root``**: evaluate checkpoint table under a single ``--runs-root`` only (legacy single-table behavior).
+Forward per sample on dataset (``--split`` default ``test``=fixed 20%% hold-out; ``all``=no split filter), aggregate three SNR (mean).
 
-Forward per sample on dataset (``--split`` default ``test``=fixed 20%% hold-out; ``all``=no split filter), aggregate three SNR (mean). **report** txt section and ztest5 appendix share ``--split``.
-
-1. **SNR_time (dB)**: see ``eval_metrics._snr_time_db`` (reference and den/noisy **each zero-mean**) /
-   ``snr_triplets_for_segment_like_evaluate_methods_on_data1``.
-2. **SNR_freq (dB)**: see ``eval_metrics._snr_freq_db``.
-3. **SNR_joint (dB)**: see ``eval_metrics._snr_joint_db``.
-
-**Noisy** baseline row: per ``evaluate_methods_on_data1``, read from ``reference_signal`` / ``noise_signal`` **txt** then
-``_resample_to_len``, call ``eval_metrics.snr_noisy_triplet_for_segment_like_evaluate_methods_on_data1`` (same as summary
-``snr_noisy_*``; **not** dataloader affine/z-score).
-
-Inference z: **always all-zero for denoising / evaluation** (independent of ``randz``/``zeroz`` in run dir names; those only indicate training latent strategy). ``--eval-seed`` kept on CLI for future use; forward no longer uses random z.
-
-On Windows **WinError 1455** / insufficient page file preventing CUDA load: use ``--device cpu``, env ``LOSS_EVAL_DEVICE=cpu``, or ``set CUDA_VISIBLE_DEVICES=`` (PowerShell: ``$env:CUDA_VISIBLE_DEVICES=''``) before running.
+Inference z: **always all-zero for denoising / evaluation** (independent of ``randz``/``zeroz`` in run dir names).
 """
 
 from __future__ import annotations
@@ -102,15 +86,6 @@ _SLUG_ORDER = [
     "msestft_5_5",
     "msestft_6_4",
     "msestft_8_2",
-    # Legacy ztest5 / other experiments (directory name parsing only)
-    "l1only",
-    "mseonly",
-    "stftonly",
-    "l1mse",
-    "l1msestft_0_4_6",
-    "msestft_0_4_6",
-    "l1msestft_4_4_2",
-    "msestft_128_0_8",
 ]
 _RUN_DIR_RE = re.compile(
     r"^(?P<prefix>.+)_(?P<slug>msestft_\d+_\d+|l1only|mseonly|stftonly|l1mse|"
@@ -124,14 +99,6 @@ _SLUG_LABEL: dict[str, str] = {
     "msestft_5_5": "MSE+STFT norm(5-5)",
     "msestft_6_4": "MSE+STFT norm(6-4)",
     "msestft_8_2": "MSE+STFT norm(8-2)",
-    "l1only": "L1",
-    "mseonly": "MSE",
-    "stftonly": "STFT",
-    "l1mse": "L1+MSE",
-    "l1msestft_0_4_6": "L1+MSE+STFT mix(0-0.4-0.6)",
-    "msestft_0_4_6": "MSE+STFT mix(0.4-0-0.6)",
-    "l1msestft_4_4_2": "L1+MSE+STFT(legacy)",
-    "msestft_128_0_8": "MSE+STFT(legacy)",
 }
 
 
@@ -189,7 +156,7 @@ def _name_cell(s: str, *, w: int = NAME_COL_W) -> str:
     return t.ljust(w)
 
 
-def _phys_reference_noisy_z_from_batch(batch: dict) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+def _phys_clean_noisy_z_from_batch(batch: dict) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """``reference_phys``, physical noisy ``noisy_phys``, z-domain noisy ``noisy_z`` (same as ``OurDataDataset``)."""
     n_z = np.asarray(batch["noisy"].squeeze(0).detach().cpu().numpy(), dtype=np.float64).ravel()
     cp = batch.get("reference_phys")
@@ -232,7 +199,7 @@ def snr_triplets_from_ds_sample(
     joint_alpha: float,
 ) -> tuple[tuple[float, float, float], tuple[float, float, float]]:
     """
-    Three SNR values per segment (denoised + noisy); noisy/reference both from **txt**.
+    Three SNR values per segment (denoised + noisy); noisy/clean both from **txt**.
 
     Returns:
         ``((snr_time, snr_freq, snr_joint)_den, (snr_noisy_time, snr_noisy_freq, snr_noisy_joint))``
@@ -252,7 +219,7 @@ def snr_triplets_from_ds_sample(
     return den_trip, noisy_trip
 
 
-def _phys_reference_noisy_and_den_z_from_batch_like_viz(
+def _phys_clean_noisy_and_den_z_from_batch_like_viz(
     batch: dict,
     pred: torch.Tensor,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
@@ -262,7 +229,7 @@ def _phys_reference_noisy_and_den_z_from_batch_like_viz(
     **For SNR evaluation use** ``snr_triplets_from_ds_sample`` (noisy from txt). ``noisy_phys`` here is still
     ``n_z*σ+μ``, for non-SNR visualization/debug only.
     """
-    c_phys, n_phys, _n_z = _phys_reference_noisy_z_from_batch(batch)
+    c_phys, n_phys, _n_z = _phys_clean_noisy_z_from_batch(batch)
     d_z = den_z_from_pred(pred)
     return c_phys, n_phys, d_z
 
@@ -322,217 +289,6 @@ def _iter_run_dirs(runs_root: Path, *, cv_folds: int = 5) -> list[Path]:
         if job_dir_has_ckpt(p, cv_folds=int(cv_folds)):
             out.append(p)
     return sorted(out, key=lambda x: _sort_key_run_dir(x.name))
-
-
-def _canonical_ztest5_slug_z_keys() -> list[tuple[str, str]]:
-    """ztest5 grid: 5 MSE–STFT mixes × randz (same as ``ztest5.py``, excludes zeroz)."""
-    return [(slug, "randz") for slug in _SLUG_ORDER if slug.startswith("msestft_")]
-
-
-def _pick_best_run_dir_for_slug_z(
-    run_dirs: list[Path],
-    *,
-    slug: str,
-    zslug: str,
-) -> Path | None:
-    """When multiple epoch subdirs exist for same (slug, z), pick max epoch."""
-    best: Path | None = None
-    best_ep = -1
-    for rd in run_dirs:
-        m = _RUN_DIR_RE.match(rd.name)
-        if m is None:
-            continue
-        if str(m.group("slug")) != str(slug) or str(m.group("z")) != str(zslug):
-            continue
-        ep = int(m.group("ep"))
-        if ep > best_ep:
-            best_ep = ep
-            best = rd
-    return best
-
-
-def _display_name_for_slug_z(slug: str, zslug: str) -> str:
-    """Without a real dir name, synthesize a name per ztest5 naming rules for same label as ``_display_name_from_run_dir``."""
-    return _display_name_from_run_dir(f"z_{slug}_{zslug}_e0")
-
-
-def print_ztest5_interleaved_appendix(
-    *,
-    repo: Path,
-    data_root: Path,
-    runs_sections: list[tuple[str, Path]],
-    reference_subdir: str,
-    noisy_subdir: str,
-    band: str,
-    split: str,
-    train_ratio: float,
-    shuffle_split: bool,
-    seed: int,
-    segment_length: int,
-    denorm_mode: str,
-    sample_rate_hz: float,
-    f_cut_hz: float,
-    joint_alpha: float,
-    ckpt: str,
-    device: str,
-    eval_seed: int,
-    max_samples: int,
-    cv_folds: int = 0,
-    cv_fold: int = 0,
-    allowed_segment_keys: set[tuple[str, str]] | None = None,
-    name_col_w: int = 56,
-) -> None:
-    """
-    ztest5 appendix: if both **TraMagNet** and **TraMagNet** ``runs-root`` sections exist, interleave-print 12 (loss,z) groups
-    as ``TraMagNet | …`` / ``TraMagNet | …`` one row each for comparison; each group evaluates **max epoch** subdir only.
-
-    With only one backbone section: degenerates to 12 rows for that section (still with ``TraMagNet |`` / ``TraMagNet |`` prefix).
-    """
-    sections = [(lab, rr.resolve()) for lab, rr in runs_sections if rr.is_dir()]
-    if not sections:
-        return
-
-    if str(repo) not in sys.path:
-        sys.path.insert(0, str(repo))
-
-    import torch
-
-    data_abs = str(data_root.resolve())
-    dev = torch.device("cuda" if device == "cuda" and torch.cuda.is_available() else "cpu")
-
-    dss = _datasets_for_split(
-        data_root=data_abs,
-        reference_subdir=str(reference_subdir),
-        noisy_subdir=str(noisy_subdir),
-        band=str(band),
-        segment_length=int(segment_length),
-        train_ratio=float(train_ratio),
-        seed=int(seed),
-        shuffle_split=bool(shuffle_split),
-        split=str(split),
-        cv_folds=int(cv_folds),
-        cv_fold=int(cv_fold),
-        allowed_segment_keys=allowed_segment_keys,
-    )
-    if allowed_segment_keys is not None and str(split).lower() in ("test", "holdout"):
-        print(
-            f"[INFO] ztest5 checkpoint eval: manifest filter {len(allowed_segment_keys)} "
-            f"(noisy, channel) segments (same as txt section above; data loading split=all)",
-            flush=True,
-        )
-    ms = max(0, int(max_samples))
-
-    by_lab: dict[str, list[Path]] = {}
-    for lab, rr in sections:
-        rds = _iter_run_dirs(rr, cv_folds=int(cv_folds))
-        if not rds:
-            print(f"[WARN] ztest5[{lab}] No job directories with checkpoints found under: {rr}", flush=True)
-        by_lab[str(lab)] = rds
-
-    rows: list[tuple[str, int, float, float, float]] = [
-        _evaluate_noisy_baseline(
-            dss=dss,
-            sample_rate_hz=float(sample_rate_hz),
-            f_cut_hz=float(f_cut_hz),
-            joint_alpha=float(joint_alpha),
-            denorm_mode=str(denorm_mode),
-            max_samples=ms,
-            allowed_segment_keys=allowed_segment_keys,
-        )
-    ]
-
-    keys = _canonical_ztest5_slug_z_keys()
-    u4 = by_lab.get("TraMagNet") or []
-    u5 = by_lab.get("TraMagNet") or []
-
-    def _eval_labeled(pref: str, rd: Path, disp: str) -> tuple[str, int, float, float, float]:
-        from data_common.cv_ensemble import list_available_fold_ckpt_paths, list_fold_ckpt_paths
-
-        runs_base = rd / "runs" if (rd / "runs").is_dir() else rd
-        nf = int(cv_folds)
-        ens: list[Path] | None = None
-        if nf >= 2:
-            ens = list_fold_ckpt_paths(runs_base, cv_folds=nf, prefer=str(ckpt))
-            if ens is None:
-                ens = list_available_fold_ckpt_paths(runs_base, cv_folds=nf, prefer=str(ckpt))
-                if ens is not None and len(ens) < nf:
-                    print(
-                        f"[INFO] ztest5[{pref}] {disp}: K-fold incomplete, using {len(ens)}/{nf}-fold ensemble",
-                        flush=True,
-                    )
-        label = f"{pref} | {disp}"
-        if ens is not None and len(ens) >= 1:
-            _, cnt, st, sf, sj = _evaluate_cv_ensemble_unet(
-                ckpt_paths=ens,
-                display_name=label,
-                dss=dss,
-                device=dev,
-                sample_rate_hz=float(sample_rate_hz),
-                f_cut_hz=float(f_cut_hz),
-                joint_alpha=float(joint_alpha),
-                denorm_mode=str(denorm_mode),
-                max_samples=ms,
-                allowed_segment_keys=allowed_segment_keys,
-            )
-            return (label, cnt, st, sf, sj)
-        name, cnt, st, sf, sj = _evaluate_one_run(
-            run_dir=rd,
-            ckpt_prefer=str(ckpt),
-            dss=dss,
-            device=dev,
-            sample_rate_hz=float(sample_rate_hz),
-            f_cut_hz=float(f_cut_hz),
-            joint_alpha=float(joint_alpha),
-            eval_seed=int(eval_seed),
-            denorm_mode=str(denorm_mode),
-            max_samples=ms,
-            allowed_segment_keys=allowed_segment_keys,
-        )
-        _ = name
-        return (label, cnt, st, sf, sj)
-
-    if u4 and u5:
-        for slug, zslug in keys:
-            disp = _display_name_for_slug_z(slug, zslug)
-            rd4 = _pick_best_run_dir_for_slug_z(u4, slug=slug, zslug=zslug)
-            rd5 = _pick_best_run_dir_for_slug_z(u5, slug=slug, zslug=zslug)
-            if rd4 is None and rd5 is None:
-                continue
-            if rd4 is not None:
-                try:
-                    rows.append(_eval_labeled("TraMagNet", rd4, disp))
-                except Exception as e:
-                    print(f"[WARN] ztest5[TraMagNet] Skipping ({disp}): {e}", flush=True)
-            if rd5 is not None:
-                try:
-                    rows.append(_eval_labeled("TraMagNet", rd5, disp))
-                except Exception as e:
-                    print(f"[WARN] ztest5[TraMagNet] Skipping ({disp}): {e}", flush=True)
-    else:
-        for lab, rds in (("TraMagNet", u5)):
-            if not rds:
-                continue
-            for slug, zslug in keys:
-                disp = _display_name_for_slug_z(slug, zslug)
-                rd = _pick_best_run_dir_for_slug_z(rds, slug=slug, zslug=zslug)
-                if rd is None:
-                    continue
-                try:
-                    rows.append(_eval_labeled(lab, rd, disp))
-                except Exception as e:
-                    print(f"[WARN] ztest5[{lab}] Skipping ({disp}): {e}", flush=True)
-
-    print("", flush=True)
-    print(
-        "[ztest5 TraMagNet comparison] Same three SNR as ``loss_eval``; "
-        "each (loss,z) group max epoch only; full K-fold → **5-fold ensemble**; "
-        "if dual backbone exists, **one TraMagNet row, one TraMagNet row** interleaved."
-        f" data-root={data_abs} split={split} cv_folds={int(cv_folds)}",
-        flush=True,
-    )
-    for lab, rr in sections:
-        print(f"  runs-root[{lab}] = {rr}", flush=True)
-    print(format_snr_table_rows(rows, name_col_w=int(name_col_w)), end="", flush=True)
 
 
 def _setup_unet_eval_imports() -> None:
@@ -881,8 +637,8 @@ def format_snr_table_rows(
     sep = sep0 + "-+-" + sep_rest
 
     out_lines = [
-        "[legend] SNR_time: after denorm, reference & signal each zero-mean, "
-        "10*log10(sum(reference^2)/sum((den-reference)^2)). "
+        "[legend] SNR_time: after denorm, clean & signal each zero-mean, "
+        "10*log10(sum(clean^2)/sum((den-clean)^2)). "
         "SNR_freq: Hann-windowed rFFT of den; power ratio (0,f_cut] vs (f_cut, Nyquist]. "
         "SNR_joint: 10*log10(alpha*10^(SNR_t/10)+(1-alpha)*10^(SNR_f/10)).",
         line(headers),
@@ -1071,7 +827,7 @@ def _main_runs_root_only(args: argparse.Namespace) -> int:
 
 
 def _main_report(args: argparse.Namespace) -> int:
-    """txt method three SNR + (if present) ztest5 TraMagNet/TraMagNet checkpoint three-SNR appendix."""
+    """txt method three SNR from exported ``output/`` results."""
     import eval_metrics as em
     from data_common.dataset_paths import dataset_tag_for_path
     from data_common.resolve_dataset_root import resolve_dataset_root
@@ -1084,20 +840,14 @@ def _main_report(args: argparse.Namespace) -> int:
     methods = [m.strip() for m in str(args.methods).split(",") if m.strip()]
     dataset_tag = str(args.dataset_tag).strip() if args.dataset_tag else dataset_tag_for_path(data_root)
 
-    from data_common.eval_split import resolve_eval_split_manifest_path
     from data_common.viz_method_splits import (
-        build_cnn_test_segment_keys,
+        build_dncnn_test_segment_keys,
         build_gan_test_segment_keys,
         print_method_test_banners,
     )
 
     split_s = str(args.split).lower().strip()
-    gan_manifest = resolve_eval_split_manifest_path(
-        _REPO,
-        getattr(args, "split_manifest", None),
-        pool_tag=str(getattr(args, "pool_tag", "data134")),
-    )
-    cnn_keys = build_cnn_test_segment_keys(
+    dncnn_keys = build_dncnn_test_segment_keys(
         data_root,
         split=split_s,
         train_ratio=float(args.train_ratio),
@@ -1115,21 +865,19 @@ def _main_report(args: argparse.Namespace) -> int:
         shuffle_split=bool(args.shuffle_split),
         band=str(args.band),
         subway_dual_channels=bool(getattr(args, "subway_dual_channels", True)),
-        split_manifest=getattr(args, "split_manifest", None),
     )
     print_method_test_banners(
         split=split_s,
-        cnn_keys=cnn_keys,
+        dncnn_keys=dncnn_keys,
         gan_keys=gan_keys,
         train_ratio=float(args.train_ratio),
         seed=int(args.seed),
         shuffle_split=bool(args.shuffle_split),
-        gan_manifest=gan_manifest if gan_manifest is not None and gan_manifest.is_file() else None,
     )
 
-    keys_by_method = {m: (cnn_keys if m == em.CNN_METHOD else gan_keys) for m in methods}
+    keys_by_method = {m: (dncnn_keys if m == em.DNCNN_METHOD else gan_keys) for m in methods}
 
-    cnn_inferer, gan_inferer, unet_single_inferer = em.init_pt_inferers(
+    dncnn_inferer, gan_inferer, unet_single_inferer = em.init_pt_inferers(
         args=args,
         methods=methods,
         data_root=data_root,
@@ -1152,7 +900,7 @@ def _main_report(args: argparse.Namespace) -> int:
         allowed_segment_keys_by_method=keys_by_method,
         baseline_segment_keys=gan_keys,
         segment_length=int(args.segment_length),
-        cnn_inferer=cnn_inferer,
+        dncnn_inferer=dncnn_inferer,
         gan_inferer=gan_inferer,
         unet_single_inferer=unet_single_inferer,
     )
@@ -1162,52 +910,6 @@ def _main_report(args: argparse.Namespace) -> int:
     print("", flush=True)
     _print_txt_methods_snr_one_line_each(summary_rows, methods, fmt=em._format_float)
     print("", flush=True)
-
-    runs_sections: list[tuple[str, Path]] = []
-    r_tm = str(getattr(args, "ztest5_tramagnet_runs_root", "") or "").strip()
-    if r_tm:
-        runs_sections.append(("TraMagNet", _resolve_repo_path_str(r_tm)))
-    else:
-        p_default = _REPO / "TraMagNet" / "output" / "ztest5_TraMagNet_grid"
-        if p_default.is_dir():
-            runs_sections.append(("TraMagNet", p_default.resolve()))
-
-    print("", flush=True)
-    print("========== ztest5 dirs (TraMagNet checkpoint three SNR) ==========", flush=True)
-    print("", flush=True)
-    if runs_sections:
-        print_ztest5_interleaved_appendix(
-            repo=_REPO,
-            data_root=data_root,
-            runs_sections=runs_sections,
-            reference_subdir=str(args.reference_subdir),
-            noisy_subdir=str(args.noisy_subdir),
-            band=str(args.band),
-            split=str(args.split),
-            train_ratio=float(args.train_ratio),
-            shuffle_split=bool(args.shuffle_split),
-            seed=int(args.seed),
-            segment_length=int(args.segment_length),
-            denorm_mode=str(args.denorm),
-            sample_rate_hz=float(args.sample_rate_hz),
-            f_cut_hz=float(args.f_cut_hz),
-            joint_alpha=float(args.joint_alpha),
-            ckpt=str(args.ckpt),
-            device=str(args.device),
-            eval_seed=int(args.eval_seed),
-            max_samples=max(0, int(args.max_samples)),
-            cv_folds=int(args.cv_folds),
-            cv_fold=int(args.cv_fold),
-            allowed_segment_keys=allowed_keys,
-        )
-    else:
-        print(
-            "[WARN] ztest5 default directory not found (``TraMagNet/output/ztest5_TraMagNet_grid`` or "
-            "``TraMagNet/output/ztest5_TraMagNet_grid``); use ``--ztest5-TraMagNet-runs-root`` / "
-            "``--ztest5-TraMagNet-runs-root`` to specify.",
-            flush=True,
-        )
-    print("", flush=True)
     return 0
 
 
@@ -1216,32 +918,18 @@ def main(argv: list[str] | None = None) -> int:
         sys.path.insert(0, str(_REPO))
 
     p = argparse.ArgumentParser(
-        description="``--mode report``: txt method three SNR + (if present) ztest5 TraMagNet/TraMagNet grid checkpoint comparison; "
-        "``--mode runs-root``: evaluate single checkpoint parent directory only."
+        description="``--mode report``: txt method three SNR from ``output/`` exports; "
+        "``--mode runs-root``: evaluate checkpoints under ``--runs-root`` only."
     )
     p.add_argument(
         "--mode",
         type=str,
         default="report",
         choices=("report", "runs-root"),
-        help="report: txt + ztest5 appendix; runs-root: checkpoint table under ``--runs-root`` only.",
+        help="report: txt SNR summary; runs-root: checkpoint table under ``--runs-root`` only.",
     )
     p.add_argument("--data-root", type=str, default="data1", help="Data root (data1/data3/data4 or ../datasets/…)")
-    p.add_argument(
-        "--split-manifest",
-        type=str,
-        default=None,
-        dest="split_manifest",
-        help="Merged split manifest (default: auto-use splits/ztest5_data134_manifest.json if present).",
-    )
-    p.add_argument(
-        "--pool-tag",
-        type=str,
-        default="data134",
-        dest="pool_tag",
-        help="Merged pool tag (same as ztest5 --pool-tag).",
-    )
-    p.add_argument("--reference-subdir", type=str, default="reference_signal")
+    p.add_argument("--reference-subdir", type=str, default="reference_signal", dest="reference_subdir")
     p.add_argument("--noisy-subdir", type=str, default="noise_signal")
     p.add_argument("--band", type=str, default="all", choices=("low", "middle", "high", "all"))
     p.add_argument("--train-ratio", type=float, default=0.8)
@@ -1270,7 +958,7 @@ def main(argv: list[str] | None = None) -> int:
         "--eval-seed",
         type=int,
         default=12345,
-        help="Placeholder: UNet eval forward z always 0; kept for ztest5 appendix arg consistency.",
+        help="Placeholder: UNet eval forward z always 0.",
     )
     p.add_argument("--max-samples", type=int, default=0, help="0=all")
 
@@ -1283,25 +971,17 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument(
         "--methods",
         type=str,
-        default="TraMagNet,cnn,gradient_wavelet_morphological_filter,multi_se_morphological_filter",
+        default="TraMagNet,dncnn,gradient_wavelet_morphological_filter,multi_se_morphological_filter",
         help="[report] Comma-separated method names (same as eval_metrics --methods).",
     )
     p.add_argument("--dataset-tag", type=str, default=None, help="[report] Default: data-root directory name.")
     p.add_argument("--strict", action="store_true", help="[report] Raise if method directory missing.")
-    p.add_argument(
-        "--ztest5-tramagnet-runs-root",
-        type=str,
-        default="",
-        dest="ztest5_tramagnet_runs_root",
-        metavar="DIR",
-        help="[report] TraMagNet ztest5 grid root; uses default under TraMagNet/output if empty.",
-    )
 
     p.add_argument(
         "--runs-root",
         type=str,
-        default=str(_TRAMAGNET / "output" / "ztest5_TraMagNet_grid"),
-        help="[runs-root mode] Checkpoint parent directory.",
+        default=str(_TRAMAGNET / "output" / "data134" / "runs"),
+        help="[runs-root mode] Checkpoint runs directory (e.g. TraMagNet/output/data134/runs).",
     )
     p.add_argument(
         "--split",

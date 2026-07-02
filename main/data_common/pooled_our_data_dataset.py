@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
@@ -12,16 +11,13 @@ from torch.utils.data import Dataset
 
 from data_common.our_data_split import infer_split_role, sample_ids_for_data_split
 from data_common.pair_specs import list_pair_specs
+from data_common.flat_pairing import axis_from_reference_path, sample_id_from_reference_path
 from data_common.pooled_data_split import (
     group_key,
-    group_keys_for_role,
-    load_pooled_split_manifest,
     parse_group_key,
     sort_group_keys,
 )
 from data_common.txt_io import pad_or_resample_to_length, read_one_file_with_meta
-
-_REFERENCE_ = re.compile(r"^sample(\d+)_([xyz])\.txt$", re.IGNORECASE)
 
 
 def _mean_std(x: torch.Tensor, *, eps: float) -> tuple[torch.Tensor, torch.Tensor]:
@@ -30,8 +26,8 @@ def _mean_std(x: torch.Tensor, *, eps: float) -> tuple[torch.Tensor, torch.Tenso
     return mu, sig
 
 
-def _affine_match_mean_std(noisy: torch.Tensor, reference: torch.Tensor, *, eps: float) -> torch.Tensor:
-    mu_c, sig_c = _mean_std(reference, eps=eps)
+def _affine_match_mean_std(noisy: torch.Tensor, clean: torch.Tensor, *, eps: float) -> torch.Tensor:
+    mu_c, sig_c = _mean_std(clean, eps=eps)
     mu_n, sig_n = _mean_std(noisy, eps=eps)
     return (noisy - mu_n) * (sig_c / sig_n) + mu_c
 
@@ -42,10 +38,9 @@ def _zscore(x: torch.Tensor, mu: torch.Tensor, sig: torch.Tensor) -> torch.Tenso
 
 @dataclass(frozen=True)
 class PooledOurDataConfig:
-    """``root_entries``: ``[(tag, path), ...]``; split from ``split_manifest`` or inline parameters."""
+    """``root_entries``: ``[(tag, path), ...]``; split computed inline from ``seed`` / ``train_ratio``."""
 
     root_entries: tuple[tuple[str, Path], ...]
-    split_manifest: str | Path | None = None
 
     reference_subdir: str = "reference_signal"
     noisy_subdir: str = "noise_signal"
@@ -90,10 +85,10 @@ class PooledOurDataDataset(Dataset):
                 strict_all_bands=strict,
             )
             for sp in specs:
-                m = _REFERENCE_.match(sp.reference_path.name)
-                if not m:
+                sid = sample_id_from_reference_path(sp.reference_path, data_root=root)
+                if not sid:
                     continue
-                sid, axis = m.group(1), m.group(2).lower()
+                axis = axis_from_reference_path(sp.reference_path, data_root=root)
                 pairs.append((tag, sid, axis, str(sp.reference_path), str(sp.noisy_path), int(sp.value_column)))
 
         if not pairs:
@@ -111,41 +106,18 @@ class PooledOurDataDataset(Dataset):
             holdout_eval=bool(cfg.holdout_eval),
         )
 
-        if cfg.split_manifest is not None:
-            manifest = load_pooled_split_manifest(cfg.split_manifest)
-            if role == "holdout_test":
-                chosen_list = group_keys_for_role(manifest, role="holdout_test")
-            elif role == "cv_train":
-                chosen_list = group_keys_for_role(manifest, role="cv_train", cv_fold=int(cfg.cv_fold))
-            elif role == "cv_val":
-                chosen_list = group_keys_for_role(manifest, role="cv_val", cv_fold=int(cfg.cv_fold))
-            elif role == "train":
-                chosen_list = group_keys_for_role(manifest, role="train_pool")
-            else:
-                chosen_list = sample_ids_for_data_split(
-                    gkeys_all,
-                    role=role,
-                    train_ratio=float(cfg.train_ratio),
-                    seed=int(cfg.seed),
-                    shuffle_split=bool(cfg.shuffle_split),
-                    split_round=bool(cfg.split_round),
-                    cv_folds=int(cfg.cv_folds),
-                    cv_fold=int(cfg.cv_fold),
-                )
-            chosen = set(chosen_list)
-        else:
-            chosen = set(
-                sample_ids_for_data_split(
-                    gkeys_all,
-                    role=role,
-                    train_ratio=float(cfg.train_ratio),
-                    seed=int(cfg.seed),
-                    shuffle_split=bool(cfg.shuffle_split),
-                    split_round=bool(cfg.split_round),
-                    cv_folds=int(cfg.cv_folds),
-                    cv_fold=int(cfg.cv_fold),
-                )
+        chosen = set(
+            sample_ids_for_data_split(
+                gkeys_all,
+                role=role,
+                train_ratio=float(cfg.train_ratio),
+                seed=int(cfg.seed),
+                shuffle_split=bool(cfg.shuffle_split),
+                split_round=bool(cfg.split_round),
+                cv_folds=int(cfg.cv_folds),
+                cv_fold=int(cfg.cv_fold),
             )
+        )
 
         flat_indices: list[int] = []
         for gk in sort_group_keys([g for g in chosen if g in by_gk], tag_order=tag_order):
@@ -187,25 +159,25 @@ class PooledOurDataDataset(Dataset):
         c_r, c_mask = _fix(c)
         n_r, n_mask = _fix(n)
 
-        reference = torch.tensor(c_r, dtype=torch.float32).unsqueeze(0)
+        clean = torch.tensor(c_r, dtype=torch.float32).unsqueeze(0)
         noisy = torch.tensor(n_r, dtype=torch.float32).unsqueeze(0)
         mask = torch.tensor([1 if (a and b) else 0 for a, b in zip(c_mask, n_mask)], dtype=torch.int64)
 
         if self.cfg.match_noisy_scale_to_reference:
-            noisy = _affine_match_mean_std(noisy, reference, eps=float(self.cfg.eps))
+            noisy = _affine_match_mean_std(noisy, clean, eps=float(self.cfg.eps))
 
-        reference_phys = reference.clone()
+        reference_phys = clean.clone()
 
         if self.cfg.zscore_using_reference:
-            mu, sig = _mean_std(reference, eps=float(self.cfg.eps))
-            reference = _zscore(reference, mu, sig)
+            mu, sig = _mean_std(clean, eps=float(self.cfg.eps))
+            clean = _zscore(clean, mu, sig)
             noisy = _zscore(noisy, mu, sig)
 
-        reference = torch.nan_to_num(reference, nan=0.0, posinf=0.0, neginf=0.0)
+        clean = torch.nan_to_num(clean, nan=0.0, posinf=0.0, neginf=0.0)
         noisy = torch.nan_to_num(noisy, nan=0.0, posinf=0.0, neginf=0.0)
         reference_phys = torch.nan_to_num(reference_phys, nan=0.0, posinf=0.0, neginf=0.0)
 
         key = f"{tag}/{Path(n_fn).stem}"
         if vcol != 2:
             key = f"{key}__vcol{vcol}"
-        return {"reference": reference, "noisy": noisy, "reference_phys": reference_phys, "key": key, "mask": mask}
+        return {"reference": clean, "noisy": noisy, "reference_phys": reference_phys, "key": key, "mask": mask}

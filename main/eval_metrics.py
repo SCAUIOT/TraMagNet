@@ -19,10 +19,10 @@ class Metrics:
     mse: float
     rmse: float
     mae: float
-    #: Time-domain SNR (dB) of denoised vs reference reference, i.e. ``_snr_time_db(reference, denoised)`` (each zero-mean); **does not** subtract noisy SNR
+    #: Time-domain SNR (dB) of denoised vs clean reference, i.e. ``_snr_time_db(clean, denoised)`` (each zero-mean); **does not** subtract noisy SNR
     snr_db: float
     pearson_r: float
-    #: Noisy vs reference reference SNR (dB), i.e. ``_snr_time_db(reference, noisy)``
+    #: Noisy vs clean reference SNR (dB), i.e. ``_snr_time_db(clean, noisy)``
     snr_noisy_db: float
 
     @property
@@ -59,8 +59,8 @@ def _maybe_denormalize_like_training(
     eps: float = 1e-6,
 ) -> np.ndarray:
     """
-    During training (./1/data/our_data_folder_dataset.py) reference is z-scored:
-      reference_z = (reference - mu) / sig
+    During training (./1/data/our_data_folder_dataset.py) clean is z-scored:
+      clean_z = (clean - mu) / sig
     If denoised appears to be in z-score space (small std), denormalize with the same mu/sig back to physical scale.
     """
     c = np.asarray(reference_raw_1024, dtype=np.float64).ravel()
@@ -77,21 +77,21 @@ def _maybe_denormalize_like_training(
     if mode == "always":
         return d * sig + mu
 
-    # auto: denoised scale much smaller than reference -> treat as z-score-space output
+    # auto: denoised scale much smaller than clean -> treat as z-score-space output
     if float(np.std(d)) < float(assume_normalized_if_std_below) and float(np.std(c)) > float(assume_normalized_if_std_below):
         return d * sig + mu
     return d
 
 
 def _snr_time_db(
-    reference: np.ndarray,
+    clean: np.ndarray,
     den: np.ndarray,
     *,
     eps: float = 1e-18,
     zero_mean: bool = True,
 ) -> float:
-    """Time-domain SNR (dB): by default reference and den/noisy are **each zero-mean**, then 10·log10(Σreference² / Σ(den−reference)²)."""
-    c = np.asarray(reference, dtype=np.float64).ravel()
+    """Time-domain SNR (dB): by default clean and den/noisy are **each zero-mean**, then 10·log10(Σclean² / Σ(den−clean)²)."""
+    c = np.asarray(clean, dtype=np.float64).ravel()
     d = np.asarray(den, dtype=np.float64).ravel()
     n = min(c.size, d.size)
     c, d = c[:n], d[:n]
@@ -104,14 +104,14 @@ def _snr_time_db(
     return float(10.0 * math.log10((p_sig + eps) / (p_n + eps)))
 
 
-def _snr_time_db_noisy(reference: np.ndarray, noisy: np.ndarray, *, eps: float = 1e-18) -> float:
+def _snr_time_db_noisy(clean: np.ndarray, noisy: np.ndarray, *, eps: float = 1e-18) -> float:
     """Noisy baseline SNR_time (alias for ``_snr_time_db``)."""
-    return _snr_time_db(reference, noisy, eps=eps, zero_mean=True)
+    return _snr_time_db(clean, noisy, eps=eps, zero_mean=True)
 
 
-def _snr_time_db_denoised(reference: np.ndarray, den: np.ndarray, *, eps: float = 1e-18) -> float:
+def _snr_time_db_denoised(clean: np.ndarray, den: np.ndarray, *, eps: float = 1e-18) -> float:
     """Denoised SNR_time (alias for ``_snr_time_db``, also zero-mean each)."""
-    return _snr_time_db(reference, den, eps=eps, zero_mean=True)
+    return _snr_time_db(clean, den, eps=eps, zero_mean=True)
 
 
 def _snr_freq_db(
@@ -175,7 +175,7 @@ def snr_triplets_for_segment_like_evaluate_methods_on_data1(
 
     **Input conventions (aligned with reading ``reference_signal`` / ``noise_signal`` / ``result`` txt)**
 
-    - ``reference_1024``: reference sequence (same scale as after ``_load_time_series_values_txt`` + ``_resample_to_len``).
+    - ``reference_1024``: clean reference sequence (same scale as after ``_load_time_series_values_txt`` + ``_resample_to_len``).
     - ``noisy_1024``: noisy sequence in **physical/file scale**; **not** passed through ``_maybe_denormalize_like_training``;
       in ``evaluate_methods`` this is the ``noisy_1024`` array itself.
     - ``den_1024``: denoised network output (same semantics as ``d.squeeze()`` written to result column 3 by ``visualize_data``),
@@ -183,7 +183,7 @@ def snr_triplets_for_segment_like_evaluate_methods_on_data1(
 
     **Computation steps**
 
-    1. Align lengths ``n = min(len(reference), len(noisy), len(den))`` and truncate to equal length.
+    1. Align lengths ``n = min(len(clean), len(noisy), len(den))`` and truncate to equal length.
 
     2. **Denormalize denoised** (consistent with training export evaluation)::
 
@@ -260,7 +260,7 @@ def snr_noisy_triplet_for_segment_like_evaluate_methods_on_data1(
     snr_joint_alpha: float,
 ) -> tuple[float, float, float]:
     """
-    **Noisy vs reference** triplet only; identical to ``snr_noisy_time_db`` / ``snr_noisy_freq_db`` /
+    **Noisy vs clean** triplet only; identical to ``snr_noisy_time_db`` / ``snr_noisy_freq_db`` /
     ``snr_noisy_joint_db`` in ``evaluate_methods_on_data1``: **no** ``_maybe_denormalize_like_training`` on noisy;
     ``reference_1024`` / ``noisy_1024`` must match arrays after reading txt and ``_resample_to_len``.
     Time-domain SNR uses ``_snr_time_db`` (each zero-mean).
@@ -283,43 +283,43 @@ def snr_noisy_triplet_for_segment_like_evaluate_methods_on_data1(
 
 
 def compute_five_metrics(
-    reference_t: np.ndarray,
+    clean_t: np.ndarray,
     noisy_t: np.ndarray,
     denoised_t: np.ndarray,
     *,
     eps: float = 1e-12,
 ) -> Metrics:
     """
-    Inputs: time-domain reference, noisy, and denoised signals (lengths must match).
+    Inputs: time-domain clean, noisy, and denoised signals (lengths must match).
     Outputs: MSE, RMSE, MAE, ``snr_db`` (dB), Pearson r, and ``snr_noisy_db`` (noisy SNR).
 
-    ``snr_db`` definition (time-domain SNR, reference and denoised **each zero-mean**):
-    - ``snr_db`` = ``_snr_time_db(reference, denoised)``
-    - ``snr_noisy_db`` = ``_snr_time_db(reference, noisy)``
+    ``snr_db`` definition (time-domain SNR, clean and denoised **each zero-mean**):
+    - ``snr_db`` = ``_snr_time_db(clean, denoised)``
+    - ``snr_noisy_db`` = ``_snr_time_db(clean, noisy)``
     - Summary table ``snr_db_mean`` is the mean of denoised SNR above (**not** minus noisy SNR)
     """
-    reference = np.asarray(reference_t, dtype=np.float64).ravel()
+    clean = np.asarray(clean_t, dtype=np.float64).ravel()
     noisy = np.asarray(noisy_t, dtype=np.float64).ravel()
     den = np.asarray(denoised_t, dtype=np.float64).ravel()
 
-    n = min(reference.size, noisy.size, den.size)
+    n = min(clean.size, noisy.size, den.size)
     if n == 0:
         raise ValueError("Input signal length is 0")
-    if reference.size != n or noisy.size != n or den.size != n:
-        reference = reference[:n]
+    if clean.size != n or noisy.size != n or den.size != n:
+        clean = clean[:n]
         noisy = noisy[:n]
         den = den[:n]
 
-    err = den - reference
+    err = den - clean
     mse = float(np.mean(err * err))
     rmse = float(math.sqrt(mse))
     mae = float(np.mean(np.abs(err)))
 
-    snr_noisy_db = _snr_time_db(reference, noisy, eps=eps)
-    snr_db = _snr_time_db(reference, den, eps=eps)
+    snr_noisy_db = _snr_time_db(clean, noisy, eps=eps)
+    snr_db = _snr_time_db(clean, den, eps=eps)
 
     # Pearson r (hand-written to avoid extra dependencies)
-    c0 = reference - float(np.mean(reference))
+    c0 = clean - float(np.mean(clean))
     d0 = den - float(np.mean(den))
     denom = float(np.sqrt(np.sum(c0 * c0) * np.sum(d0 * d0)))
     pearson_r = float(np.sum(c0 * d0) / (denom + eps))
@@ -334,27 +334,16 @@ def compute_five_metrics(
     )
 
 
-CNN_METHOD = "cnn"
+DNCNN_METHOD = "dncnn"
 GAN_METHOD = "TraMagNet"
 UNET_SINGLE_METHOD = "unet_single"
 
-_NOISE_TAG_RE = re.compile(r"\+(high|low|middle|subway)")
-_DATATMP_UNDERSCORE_BAND = re.compile(r"^(.+)_(low|middle|high)\.txt$", re.IGNORECASE)
 
+def _reference_filename_for_dataset(noisy_name: str, data_root: Path) -> str:
+    from data_common.flat_pairing import reference_filename_for_noisy
 
-def _reference_filename_from_noisy_or_result(name: str) -> str:
-    # sample500+high_x.txt -> sample500_x.txt
-    # sample100_x+subway.txt -> sample100_x.txt
-    return _NOISE_TAG_RE.sub("", name)
-
-
-def _reference_filename_for_dataset(noisy_name: str, dataset_tag: str) -> str:
-    """Derive reference_signal filename from noisy/result name; datatmp: ``<base>_band.txt`` → ``<base>.txt``."""
-    if dataset_tag.strip().lower() == "datatmp":
-        m = _DATATMP_UNDERSCORE_BAND.match(noisy_name)
-        if m:
-            return f"{m.group(1)}.txt"
-    return _reference_filename_from_noisy_or_result(noisy_name)
+    name = reference_filename_for_noisy(noisy_name, data_root=data_root)
+    return name if name else noisy_name
 
 
 def _iter_txt_files(dir_path: Path) -> Iterable[Path]:
@@ -366,9 +355,8 @@ def add_pt_inference_arguments(
     *,
     include_device_ckpt: bool = True,
 ) -> None:
-    """cnn / TraMagNet / UNet-only ablation K-fold .pt on-the-fly inference args (same as viz_compare_eight_panel)."""
+    """dncnn / TraMagNet / UNet-only ablation K-fold .pt on-the-fly inference args."""
     from data_common.cv_ensemble import add_cv_ensemble_arguments
-    from data_common.viz_ckpt_resolve import add_viz_job_arguments
 
     g5 = parser.add_argument_group("TraMagNet K-fold inference (MagGAN)")
     g5.add_argument(
@@ -380,14 +368,11 @@ def add_pt_inference_arguments(
         help="Runs directory with fold_0..fold_{K-1}; auto-search if omitted",
     )
     g5.add_argument("--gan-z-mode", type=str, default="zero", choices=("zero", "random"))
-    gc = parser.add_argument_group("cnn K-fold inference (CNN)")
-    gc.add_argument("--cnn-runs-dir", type=str, default=None, dest="cnn_runs_dir", metavar="DIR")
-    gc.add_argument("--cnn-job-name", type=str, default=None, dest="cnn_job_name")
-    gc.add_argument("--depth", type=int, default=18)
+    gc = parser.add_argument_group("DnCNN K-fold inference")
+    gc.add_argument("--dncnn-runs-dir", type=str, default=None, dest="dncnn_runs_dir", metavar="DIR")
     gc.add_argument("--features", type=int, default=64)
     gc.add_argument("--middle-depth", type=int, default=10, dest="middle_depth")
     gc.add_argument("--num-residual", type=int, default=5, dest="num_residual")
-    gc.add_argument("--legacy-plain", action="store_true", dest="legacy_plain")
     gc.add_argument("--use-attention", action="store_true", dest="use_attention")
     gc.add_argument("--no-attention", action="store_true", dest="no_attention")
     gc.add_argument("--attention-reduction", type=int, default=8, dest="attention_reduction")
@@ -404,7 +389,6 @@ def add_pt_inference_arguments(
         g5.add_argument("--device", type=str, default="cuda", choices=("cuda", "cpu"))
         g5.add_argument("--ckpt", type=str, default="last", help="Prefer last or best checkpoint per fold")
     add_cv_ensemble_arguments(parser)
-    add_viz_job_arguments(parser)
 
 
 def init_pt_inferers(
@@ -418,11 +402,11 @@ def init_pt_inferers(
     """Initialize cnn / TraMagNet / UNet-only ablation inferers per ``methods``; returns ``None`` for methods not listed."""
     from data_common.infer_cv import DnCNNCvInferer, TraMagNetCvInferer, TRAMAGNET_METHOD, UnetSingleCvInferer
 
-    cnn_inferer = None
+    dncnn_inferer = None
     gan_inferer = None
     unet_single_inferer = None
-    if CNN_METHOD in methods:
-        cnn_inferer = DnCNNCvInferer(
+    if DNCNN_METHOD in methods:
+        dncnn_inferer = DnCNNCvInferer(
             args=args,
             data_root=data_root,
             dataset_tag=dataset_tag,
@@ -445,7 +429,7 @@ def init_pt_inferers(
             denorm=str(denorm_mode),
             value_scale=1.0,
         )
-    return cnn_inferer, gan_inferer, unet_single_inferer
+    return dncnn_inferer, gan_inferer, unet_single_inferer
 
 
 def _build_eval_row(
@@ -550,15 +534,14 @@ def _evaluate_pt_method_on_test_set(
     seg = int(getattr(getattr(inferer, "pre_cfg", None), "segment_length", 0) or 0) or int(segment_length)
 
     for noisy_name in sample_names:
-        reference_name = _reference_filename_for_dataset(noisy_name, dataset_tag)
+        reference_name = _reference_filename_for_dataset(noisy_name, reference_dir.parent)
         reference_path = reference_dir / reference_name
         noisy_path = noise_dir / noisy_name
         if not reference_path.is_file() or not noisy_path.is_file():
             print(f"[SKIP] {method} missing reference/noisy: {reference_name} / {noisy_name}", flush=True)
             continue
 
-        is_data3_subway = dataset_tag.lower().strip() == "data3" and "+subway" in noisy_name.lower()
-        noisy_has_dual = bool(is_data3_subway and subway_noisy_has_four_value_columns(noisy_path))
+        noisy_has_dual = bool(subway_noisy_has_four_value_columns(noisy_path))
 
         try:
             if noisy_has_dual:
@@ -612,7 +595,7 @@ def _evaluate_pt_method_on_test_set(
 
             if not segment_in_eval_split(noisy_name, method_keys, channel="ch0"):
                 continue
-            reference = _resample_to_len(_load_time_series_values_txt(reference_path, value_column=2), seg)
+            clean = _resample_to_len(_load_time_series_values_txt(reference_path, value_column=2), seg)
             noisy = _resample_to_len(_load_time_series_values_txt(noisy_path, value_column=2), seg)
             den = inferer.infer_single(
                 reference_path=reference_path,
@@ -625,7 +608,7 @@ def _evaluate_pt_method_on_test_set(
                     noisy_name=noisy_name,
                     reference_name=reference_name,
                     ch_tag="ch0",
-                    reference_1024=reference,
+                    reference_1024=clean,
                     noisy_1024=noisy,
                     den_1024=den,
                     include_snr_triplets=include_snr_triplets,
@@ -637,10 +620,8 @@ def _evaluate_pt_method_on_test_set(
                 )
             )
         except Exception as e:
-            if dataset_tag.strip().lower() == "datatmp":
-                print(f"[WARN] [{method}] Skipping {noisy_name}: {e}", flush=True)
-                continue
-            raise
+            print(f"[WARN] [{method}] Skipping {noisy_name}: {e}", flush=True)
+            continue
 
 
 def evaluate_methods_on_data1(
@@ -660,7 +641,7 @@ def evaluate_methods_on_data1(
     allowed_segment_keys_by_method: dict[str, set[tuple[str, str]] | None] | None = None,
     baseline_segment_keys: set[tuple[str, str]] | None = None,
     segment_length: int = 1024,
-    cnn_inferer: Any | None = None,
+    dncnn_inferer: Any | None = None,
     gan_inferer: Any | None = None,
     unet_single_inferer: Any | None = None,
 ) -> tuple[list[dict], list[dict]]:
@@ -671,13 +652,13 @@ def evaluate_methods_on_data1(
         if allowed_segment_keys_by_method is not None:
             method_keys = allowed_segment_keys_by_method.get(method, allowed_segment_keys)
 
-        if method == CNN_METHOD:
-            if cnn_inferer is None:
+        if method == DNCNN_METHOD:
+            if dncnn_inferer is None:
                 print("[WARN] Skipping cnn: K-fold inferer not initialized", flush=True)
                 continue
             _evaluate_pt_method_on_test_set(
-                method=CNN_METHOD,
-                inferer=cnn_inferer,
+                method=DNCNN_METHOD,
+                inferer=dncnn_inferer,
                 rows=rows,
                 reference_dir=reference_dir,
                 noise_dir=noise_dir,
@@ -743,35 +724,23 @@ def evaluate_methods_on_data1(
 
         for den_path in _iter_txt_files(result_dir):
             noisy_name = den_path.name
-            reference_name = _reference_filename_for_dataset(noisy_name, dataset_tag)
+            reference_name = _reference_filename_for_dataset(noisy_name, reference_dir.parent)
 
             reference_path = reference_dir / reference_name
             noisy_path = noise_dir / noisy_name
-            is_datatmp = dataset_tag.strip().lower() == "datatmp"
 
             if not reference_path.exists():
-                if is_datatmp:
-                    print(
-                        f"[WARN] [{method}] Skipping {noisy_name}: missing reference {reference_path}",
-                        flush=True,
-                    )
-                    continue
-                raise FileNotFoundError(f"[{method}] Missing reference file: {reference_path} (derived from {noisy_name})")
+                raise FileNotFoundError(
+                    f"[{method}] Missing clean file: {reference_path} (expected same name as {noisy_name})"
+                )
             if not noisy_path.exists():
-                if is_datatmp:
-                    print(
-                        f"[WARN] [{method}] Skipping {noisy_name}: missing noisy {noisy_path}",
-                        flush=True,
-                    )
-                    continue
                 raise FileNotFoundError(f"[{method}] Missing noisy file: {noisy_path} (must match result filename)")
 
-            is_data3_subway = (dataset_tag.lower().strip() == "data3") and ("+subway" in noisy_name.lower())
-            noisy_has_dual = bool(is_data3_subway and subway_noisy_has_four_value_columns(noisy_path))
-            den_has_dual = bool(is_data3_subway and subway_noisy_has_four_value_columns(den_path))
+            noisy_has_dual = bool(subway_noisy_has_four_value_columns(noisy_path))
+            den_has_dual = bool(subway_noisy_has_four_value_columns(den_path))
 
             # data3: if noisy is dual-channel (columns 3/4), split into ch0/ch1 samples;
-            # reference must align with the same amplitude column (same as training/our_data_dataset).
+            # clean reference must align with the same amplitude column (same as training/our_data_dataset).
             channel_value_columns = [2, 3] if noisy_has_dual else [2]
 
             for ch_i, vcol in enumerate(channel_value_columns):
@@ -779,7 +748,7 @@ def evaluate_methods_on_data1(
                 if method_keys is not None and (noisy_name, ch_tag) not in method_keys:
                     continue
                 try:
-                    reference = _load_time_series_values_txt(reference_path, value_column=vcol)
+                    clean = _load_time_series_values_txt(reference_path, value_column=vcol)
                     noisy = _load_time_series_values_txt(noisy_path, value_column=vcol)
                     if den_has_dual:
                         den = _load_time_series_values_txt(den_path, value_column=vcol)
@@ -794,7 +763,7 @@ def evaluate_methods_on_data1(
                             )
                             continue
 
-                    reference_1024 = _resample_to_len(reference, segment_length)
+                    reference_1024 = _resample_to_len(clean, segment_length)
                     noisy_1024 = _resample_to_len(noisy, segment_length)
                     den_1024 = _resample_to_len(den, segment_length)
                     row = _build_eval_row(
@@ -813,13 +782,11 @@ def evaluate_methods_on_data1(
                         pt_inferred=False,
                     )
                 except Exception as e:
-                    if is_datatmp:
-                        print(
-                            f"[WARN] [{method}] Skipping {noisy_name} (ch{ch_i}): {e}",
-                            flush=True,
-                        )
-                        break
-                    raise
+                    print(
+                        f"[WARN] [{method}] Skipping {noisy_name} (ch{ch_i}): {e}",
+                        flush=True,
+                    )
+                    break
                 rows.append(row)
 
     summary_rows = summarize_eval_detail_rows(
@@ -962,7 +929,7 @@ def print_summary_table(summary_rows: list[dict]) -> None:
         print(
             "[legend] First row Noisy: snr_db_mean = noisy SNR (dB, reference/noisy each zero-mean); "
             "snr_time/freq/joint_db_mean = mean of noisy triplet SNR (same definition as loss_eval). "
-            "Other rows: snr_db_mean = denoised SNR (dB, reference/denoised each zero-mean, not minus noisy); "
+            "Other rows: snr_db_mean = denoised SNR (dB, clean/denoised each zero-mean, not minus noisy); "
             "snr_*_db_mean = mean of denoised triplet SNR.",
             flush=True,
         )
@@ -982,7 +949,7 @@ def print_summary_table(summary_rows: list[dict]) -> None:
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="Compute MSE, RMSE, MAE, denoised SNR (dB), Pearson r aligned with reference/noisy and print summary table. "
-        "Traditional methods read output/result; cnn/TraMagNet/UNet-only ablation use K-fold .pt on-the-fly inference (same as viz). "
+        "Traditional methods read output/result; dncnn/TraMagNet/UNet-only ablation use K-fold .pt on-the-fly inference (same as viz). "
         "Default --split test: DnCNN baseline single-dataset hold-out; other methods (incl. TraMagNet) use MagGAN data134 hold-out.",
     )
     parser.add_argument("--data-root", type=str, default="./data1", help="Directory containing reference_signal/noise_signal")
@@ -1010,8 +977,8 @@ def main() -> int:
     parser.add_argument(
         "--methods",
         type=str,
-        default="TraMagNet,cnn,gradient_wavelet_morphological_filter,multi_se_morphological_filter",
-        help="Comma-separated method names; cnn/TraMagNet/UNet-only ablation use .pt inference, not output/result",
+        default="TraMagNet,dncnn,gradient_wavelet_morphological_filter,multi_se_morphological_filter",
+        help="Comma-separated method names; dncnn/TraMagNet/UNet-only ablation use .pt inference, not output/result",
     )
     add_pt_inference_arguments(parser)
     parser.add_argument("--segment-length", type=int, default=1024, help="Resample length (traditional methods; pt uses runs config)")
@@ -1028,27 +995,13 @@ def main() -> int:
         help="Whether to denormalize denoised per training z-score: always/never/auto",
     )
     from data_common.viz_method_splits import (
-        build_cnn_test_segment_keys,
+        build_dncnn_test_segment_keys,
         build_gan_test_segment_keys,
         print_method_test_banners,
     )
     from data_common.viz_split import add_viz_split_arguments
 
     add_viz_split_arguments(parser, default_split="test")
-    parser.add_argument(
-        "--split-manifest",
-        type=str,
-        default=None,
-        dest="split_manifest",
-        help="Merged split manifest (default: auto-use splits/ztest5_data134_manifest.json if present).",
-    )
-    parser.add_argument(
-        "--pool-tag",
-        type=str,
-        default="data134",
-        dest="pool_tag",
-        help="Merged pool tag (same as ztest5 --pool-tag).",
-    )
     args = parser.parse_args()
 
     _repo = Path(__file__).resolve().parent
@@ -1062,15 +1015,8 @@ def main() -> int:
     methods = [m.strip() for m in str(args.methods).split(",") if m.strip()]
     dataset_tag = str(args.dataset_tag).strip() if args.dataset_tag else dataset_tag_for_path(data_root)
 
-    from data_common.eval_split import resolve_eval_split_manifest_path
-
     split_s = str(args.split).lower().strip()
-    gan_manifest = resolve_eval_split_manifest_path(
-        _repo,
-        getattr(args, "split_manifest", None),
-        pool_tag=str(getattr(args, "pool_tag", "data134")),
-    )
-    cnn_keys = build_cnn_test_segment_keys(
+    dncnn_keys = build_dncnn_test_segment_keys(
         data_root,
         split=split_s,
         train_ratio=float(args.train_ratio),
@@ -1088,36 +1034,34 @@ def main() -> int:
         shuffle_split=bool(args.shuffle_split),
         band=str(args.band),
         subway_dual_channels=bool(args.subway_dual_channels),
-        split_manifest=getattr(args, "split_manifest", None),
     )
     print_method_test_banners(
         split=split_s,
-        cnn_keys=cnn_keys,
+        dncnn_keys=dncnn_keys,
         gan_keys=gan_keys,
         train_ratio=float(args.train_ratio),
         seed=int(args.seed),
         shuffle_split=bool(args.shuffle_split),
-        gan_manifest=gan_manifest if gan_manifest is not None and gan_manifest.is_file() else None,
     )
     print(
-        "[INFO] Per-method test sets: cnn=single-dataset hold-out; others=TraMagNet data134 hold-out (Noisy baseline also summarized on TraMagNet test set).",
+        "[INFO] Per-method test sets: inline 8:2 holdout from seed/train_ratio (same split rules for DnCNN and TraMagNet on this data-root).",
         flush=True,
     )
 
     keys_by_method: dict[str, set[tuple[str, str]] | None] = {}
     for m in methods:
-        keys_by_method[m] = cnn_keys if m == CNN_METHOD else gan_keys
+        keys_by_method[m] = dncnn_keys if m == DNCNN_METHOD else gan_keys
 
-    cnn_inferer, gan_inferer, unet_single_inferer = init_pt_inferers(
+    dncnn_inferer, gan_inferer, unet_single_inferer = init_pt_inferers(
         args=args,
         methods=methods,
         data_root=data_root,
         dataset_tag=dataset_tag,
         denorm_mode=str(args.denorm),
     )
-    if CNN_METHOD in methods or GAN_METHOD in methods or UNET_SINGLE_METHOD in methods:
+    if DNCNN_METHOD in methods or GAN_METHOD in methods or UNET_SINGLE_METHOD in methods:
         print(
-            "[INFO] cnn/TraMagNet/UNet-only ablation: K-fold .pt on-the-fly inference (does not read output/cnn|TraMagNet|UNet-only ablation/result).",
+            "[INFO] dncnn/TraMagNet/UNet-only ablation: K-fold .pt on-the-fly inference (does not read output/dncnn|TraMagNet|UNet-only ablation/result).",
             flush=True,
         )
 
@@ -1133,7 +1077,7 @@ def main() -> int:
         allowed_segment_keys_by_method=keys_by_method,
         baseline_segment_keys=gan_keys,
         segment_length=int(args.segment_length),
-        cnn_inferer=cnn_inferer,
+        dncnn_inferer=dncnn_inferer,
         gan_inferer=gan_inferer,
         unet_single_inferer=unet_single_inferer,
     )

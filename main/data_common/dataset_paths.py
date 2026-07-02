@@ -109,7 +109,7 @@ def resolve_data_root_entry(part: str, *, repo: Path | None = None) -> tuple[str
     """
     Parse one ``--data-roots`` entry; return ``(tag, path)``.
 
-    ``tag`` keeps the CLI name (e.g. ``data1``) so group keys match ``splits/ztest5_data134_manifest.json``;
+    ``tag`` keeps the CLI name (e.g. ``data1``) for pooled group keys ``{tag}/{sample_id}``.
     ``path`` points at the actual ``public/datasets/…`` directory.
     """
     repo = MAIN_ROOT if repo is None else Path(repo)

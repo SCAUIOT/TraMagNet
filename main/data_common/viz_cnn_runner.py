@@ -20,6 +20,7 @@ if str(_CNN) not in sys.path:
 
 from data_common.cv_ensemble import add_cv_ensemble_arguments
 from data_common.ensemble_infer import load_dncnn_ensemble, tensor_ensemble_forward
+from data_common.flat_pairing import sample_id_from_clean_path
 from data_common.viz_ckpt_resolve import resolve_viz_inference_plan
 from data_common.viz_pooled import add_viz_pooled_arguments
 from data_common.viz_split import (
@@ -80,8 +81,8 @@ def _mean_std(x: torch.Tensor, *, eps: float = 1e-6) -> tuple[torch.Tensor, torc
     return mu, sig
 
 
-def _affine_match_mean_std(noisy: torch.Tensor, reference: torch.Tensor, *, eps: float = 1e-6) -> torch.Tensor:
-    mu_c, sig_c = _mean_std(reference, eps=eps)
+def _affine_match_mean_std(noisy: torch.Tensor, clean: torch.Tensor, *, eps: float = 1e-6) -> torch.Tensor:
+    mu_c, sig_c = _mean_std(clean, eps=eps)
     mu_n, sig_n = _mean_std(noisy, eps=eps)
     return (noisy - mu_n) * (sig_c / sig_n) + mu_c
 
@@ -106,7 +107,7 @@ def _cnn_mp_init(pack: dict) -> None:
     device = _t.device("cpu")
     cfg_common = dict(
         root=pack["data_root"],
-        reference_subdir=pack["reference_subdir"],
+        clean_subdir=pack["clean_subdir"],
         noisy_subdir=pack["noisy_subdir"],
         band=pack["band"],
         segment_length=int(pack["segment_length"]),
@@ -116,8 +117,8 @@ def _cnn_mp_init(pack: dict) -> None:
         split_round=True,
         resample_mode=pack["resample_mode"],
         strict_all_bands=not bool(pack.get("manifest_dual", False)),
-        match_noisy_scale_to_reference=bool(pack["match_noisy_scale"]),
-        zscore_using_reference=bool(pack["zscore_using_reference"]),
+        match_noisy_scale_to_clean=bool(pack["match_noisy_scale"]),
+        zscore_using_clean=bool(pack["zscore_using_clean"]),
     )
     if pack.get("manifest_dual", False):
         export_dss = [
@@ -202,14 +203,14 @@ def _cnn_mp_run_chunk(chunk_indices: list[int], infer_bs: int) -> int:
                 c.squeeze().detach().cpu().numpy(),
                 n.squeeze().detach().cpu().numpy(),
                 d.squeeze().detach().cpu().numpy(),
-                title=f"{k} (band={band}) — reference vs noisy vs denoised",
+                title=f"{k} (band={band}) — clean vs noisy vs denoised",
                 figsize=(12.0, 4.0),
                 dpi=160,
                 xlabel="Sample",
                 ylabel="Amplitude (preprocessed)",
                 noisy_label="noisy",
                 denoised_label="denoised",
-                reference_label="reference",
+                clean_label="clean",
             )
             y = d.squeeze().detach().cpu().float().numpy()
             with (res_dir / f"{k}.txt").open("w", encoding="utf-8", newline="\n") as f:
@@ -223,7 +224,7 @@ def _cnn_mp_run_chunk(chunk_indices: list[int], infer_bs: int) -> int:
         ds_i, j = (int(item[0]), int(item[1])) if isinstance(item, (list, tuple)) else (0, int(item))
         it = dss[ds_i][j]
         keys.append(str(it.get("key", f"idx_{j}")))
-        c_list.append(it["reference"].unsqueeze(0))
+        c_list.append(it["clean"].unsqueeze(0))
         n_list.append(it["noisy"].unsqueeze(0))
         if len(keys) >= infer_bs:
             exported += flush()
@@ -296,14 +297,14 @@ def _run_one_split(args: argparse.Namespace, *, split: str, clear_outputs: bool 
     noisy_dir = root_p / args.noisy_subdir
     has_subway_dual = False
     if noisy_dir.is_dir():
-        for p in noisy_dir.glob("*+subway.txt"):
+        for p in noisy_dir.glob("sample*.txt"):
             if subway_noisy_has_four_value_columns(p):
                 has_subway_dual = True
                 break
 
     cfg_common = dict(
         root=data_root,
-        reference_subdir=args.reference_subdir,
+        clean_subdir=args.clean_subdir,
         noisy_subdir=args.noisy_subdir,
         band=args.band,  # type: ignore[arg-type]
         segment_length=int(args.segment_length),
@@ -313,8 +314,8 @@ def _run_one_split(args: argparse.Namespace, *, split: str, clear_outputs: bool 
         split_round=True,
         resample_mode=args.resample_mode,  # type: ignore[arg-type]
         strict_all_bands=(allowed_keys is None),
-        match_noisy_scale_to_reference=bool(args.match_noisy_scale),
-        zscore_using_reference=bool(args.zscore_using_reference),
+        match_noisy_scale_to_clean=bool(args.match_noisy_scale),
+        zscore_using_clean=bool(args.zscore_using_clean),
     )
     if allowed_keys is not None:
         # Same as loss_eval.build_datasets_for_eval: train pool + holdout pool, then filter by manifest keys
@@ -357,7 +358,7 @@ def _run_one_split(args: argparse.Namespace, *, split: str, clear_outputs: bool 
     if has_subway_dual:
         specs = list_pair_specs(
             root_p,
-            reference_subdir=args.reference_subdir,
+            clean_subdir=args.clean_subdir,
             noisy_subdir=args.noisy_subdir,
             band=args.band,
             subway_dual_channels=False,
@@ -373,6 +374,7 @@ def _run_one_split(args: argparse.Namespace, *, split: str, clear_outputs: bool 
                 shuffle_split=bool(args.shuffle_split),
                 cv_folds=int(args.cv_folds),
                 cv_fold=int(args.cv_fold),
+                data_root=root_p,
             )
         total = len(specs)
         stride = max(1, int(args.stride))
@@ -386,15 +388,15 @@ def _run_one_split(args: argparse.Namespace, *, split: str, clear_outputs: bool 
                 if not spec_in_allowed_keys(sp, allowed_keys):
                     continue
             else:
-                m = re.match(r"^sample(\d+)_", Path(sp.reference_path).name, re.IGNORECASE)
-                if m and chosen_sids and (m.group(1) not in chosen_sids):
+                sid = sample_id_from_clean_path(sp.clean_path, data_root=root_p)
+                if sid and chosen_sids and sid not in chosen_sids:
                     continue
             noisy_path = Path(sp.noisy_path)
-            if not (noisy_path.name.endswith("+subway.txt") and subway_noisy_has_four_value_columns(noisy_path)):
+            if not subway_noisy_has_four_value_columns(noisy_path):
                 continue
 
-            c_a_s, _ = read_one_file_with_meta(sp.reference_path, value_column=2)
-            c_b_s, _ = read_one_file_with_meta(sp.reference_path, value_column=3)
+            c_a_s, _ = read_one_file_with_meta(sp.clean_path, value_column=2)
+            c_b_s, _ = read_one_file_with_meta(sp.clean_path, value_column=3)
             tc, st = read_two_channel_file(noisy_path)
             if st.get("kept_lines", 0) < 2:
                 continue
@@ -415,24 +417,24 @@ def _run_one_split(args: argparse.Namespace, *, split: str, clear_outputs: bool 
             a_r, _ = pad_or_resample_to_length(a, int(args.segment_length), mode="resample_linear")
             b_r, _ = pad_or_resample_to_length(b, int(args.segment_length), mode="resample_linear")
 
-            reference_a = torch.tensor(c_a_r, dtype=torch.float32).unsqueeze(0).unsqueeze(0).to(device)
-            reference_b = torch.tensor(c_b_r, dtype=torch.float32).unsqueeze(0).unsqueeze(0).to(device)
+            clean_a = torch.tensor(c_a_r, dtype=torch.float32).unsqueeze(0).unsqueeze(0).to(device)
+            clean_b = torch.tensor(c_b_r, dtype=torch.float32).unsqueeze(0).unsqueeze(0).to(device)
             noisy_a = torch.tensor(a_r, dtype=torch.float32).unsqueeze(0).unsqueeze(0).to(device)
             noisy_b = torch.tensor(b_r, dtype=torch.float32).unsqueeze(0).unsqueeze(0).to(device)
 
             if bool(args.match_noisy_scale):
-                noisy_a = _affine_match_mean_std(noisy_a, reference_a)
-                noisy_b = _affine_match_mean_std(noisy_b, reference_b)
-            if bool(args.zscore_using_reference):
-                mu_a, sig_a = _mean_std(reference_a)
-                mu_b, sig_b = _mean_std(reference_b)
-                reference_a_z = _zscore(reference_a, mu_a, sig_a)
-                reference_b_z = _zscore(reference_b, mu_b, sig_b)
+                noisy_a = _affine_match_mean_std(noisy_a, clean_a)
+                noisy_b = _affine_match_mean_std(noisy_b, clean_b)
+            if bool(args.zscore_using_clean):
+                mu_a, sig_a = _mean_std(clean_a)
+                mu_b, sig_b = _mean_std(clean_b)
+                clean_a_z = _zscore(clean_a, mu_a, sig_a)
+                clean_b_z = _zscore(clean_b, mu_b, sig_b)
                 noisy_a_z = _zscore(noisy_a, mu_a, sig_a)
                 noisy_b_z = _zscore(noisy_b, mu_b, sig_b)
             else:
-                reference_a_z = reference_a
-                reference_b_z = reference_b
+                clean_a_z = clean_a
+                clean_b_z = clean_b
                 noisy_a_z = noisy_a
                 noisy_b_z = noisy_b
 
@@ -440,16 +442,16 @@ def _run_one_split(args: argparse.Namespace, *, split: str, clear_outputs: bool 
             den_b = _denoise_batch(noisy_b_z)
 
             stem = noisy_path.stem
-            title = f"{stem} (subway dual) — reference vs noisy vs denoised"
+            title = f"{stem} (subway dual) — clean vs noisy vs denoised"
             save_dual_column_triplet_figure(
                 img_dir / f"{stem}.jpg",
-                reference_a_z.squeeze().detach().cpu().numpy(),
+                clean_a_z.squeeze().detach().cpu().numpy(),
                 noisy_a_z.squeeze().detach().cpu().numpy(),
                 den_a.squeeze().detach().cpu().numpy(),
                 noisy_b_z.squeeze().detach().cpu().numpy(),
                 den_b.squeeze().detach().cpu().numpy(),
                 title=title,
-                reference_b=reference_b_z.squeeze().detach().cpu().numpy(),
+                clean_b=clean_b_z.squeeze().detach().cpu().numpy(),
             )
             merged_path = res_dir / f"{stem}.txt"
             da = den_a.squeeze().detach().cpu().numpy().reshape(-1)
@@ -482,9 +484,7 @@ def _run_one_split(args: argparse.Namespace, *, split: str, clear_outputs: bool 
                 flush=True,
             )
         model_args = {
-            "depth": int(args.depth),
             "features": int(args.features),
-            "legacy_plain": bool(getattr(args, "legacy_plain", False)),
             "middle_depth": int(args.middle_depth),
             "num_residual": int(args.num_residual),
             "use_attention": bool(args.use_attention),
@@ -498,14 +498,14 @@ def _run_one_split(args: argparse.Namespace, *, split: str, clear_outputs: bool 
             "ckpt_path": str(ckpt_path.resolve()),
             "ckpt_paths": [str(p.resolve()) for p in ckpt_paths],
             "data_root": data_root,
-            "reference_subdir": args.reference_subdir,
+            "clean_subdir": args.clean_subdir,
             "noisy_subdir": args.noisy_subdir,
             "band": args.band,
             "segment_length": int(args.segment_length),
             **split_kw,
             "resample_mode": args.resample_mode,
             "match_noisy_scale": bool(args.match_noisy_scale),
-            "zscore_using_reference": bool(args.zscore_using_reference),
+            "zscore_using_clean": bool(args.zscore_using_clean),
             "manifest_dual": manifest_dual,
             "model_args": model_args,
             "img_dir": str(img_dir.resolve()),
@@ -543,14 +543,14 @@ def _run_one_split(args: argparse.Namespace, *, split: str, clear_outputs: bool 
                 c.squeeze().detach().cpu().numpy(),
                 n.squeeze().detach().cpu().numpy(),
                 d.squeeze().detach().cpu().numpy(),
-                title=f"{k} (band={args.band}) — reference vs noisy vs denoised",
+                title=f"{k} (band={args.band}) — clean vs noisy vs denoised",
                 figsize=(12.0, 4.0),
                 dpi=160,
                 xlabel="Sample",
                 ylabel="Amplitude (preprocessed)",
                 noisy_label="noisy",
                 denoised_label="denoised",
-                reference_label="reference",
+                clean_label="clean",
             )
             y = d.squeeze().detach().cpu().float().numpy()
             with (res_dir / f"{k}.txt").open("w", encoding="utf-8", newline="\n") as f:
@@ -563,7 +563,7 @@ def _run_one_split(args: argparse.Namespace, *, split: str, clear_outputs: bool 
     for ds_i, j in indices:
         it = export_dss[int(ds_i)][int(j)]
         keys.append(str(it.get("key", f"idx_{j}")))
-        c_list.append(it["reference"].unsqueeze(0))
+        c_list.append(it["clean"].unsqueeze(0))
         n_list.append(it["noisy"].unsqueeze(0))
         if len(keys) >= infer_bs:
             exported += flush_triplet_batch()
@@ -589,7 +589,7 @@ def main() -> int:
         dest="data_root",
         help="Data root (same as train.py --data-root; --our-data-root alias accepted).",
     )
-    p.add_argument("--reference-subdir", type=str, default="reference_signal")
+    p.add_argument("--clean-subdir", type=str, default="clean_signal")
     p.add_argument("--noisy-subdir", type=str, default="noise_signal")
     p.add_argument("--band", type=str, default="all", choices=("low", "middle", "high", "all"))
     add_viz_split_arguments(p)
@@ -611,18 +611,16 @@ def main() -> int:
         help="Same as train_dncnn --match-noisy-scale (default on).",
     )
     p.add_argument(
-        "--zscore-using-reference",
+        "--zscore-using-clean",
         action=argparse.BooleanOptionalAction,
         default=True,
-        dest="zscore_using_reference",
-        help="Same as train_dncnn --zscore-using-reference (default on).",
+        dest="zscore_using_clean",
+        help="Same as train_dncnn --zscore-using-clean (default on).",
     )
     p.add_argument("--device", type=str, default="cpu", choices=("cpu", "cuda"))
 
     # model params (must match training)
-    p.add_argument("--depth", type=int, default=18)
     p.add_argument("--features", type=int, default=64)
-    p.add_argument("--legacy-plain", action="store_true", help="Match legacy single-layer DnCNN training.")
     p.add_argument("--middle-depth", type=int, default=10)
     p.add_argument("--num-residual", type=int, default=5, dest="num_residual")
     p.add_argument("--use-attention", action="store_true", help="Align with attention-enabled training model.")

@@ -1,11 +1,7 @@
-[build-system]
-requires = ["setuptools>=68", "wheel"]
-build-backend = "setuptools.build_meta"
-
 [project]
 name = "tramagnet-denoising"
 version = "1.0.0"
-description = "TraMagNet magnetic signal denoising — paper reproduction scripts (see README layout note)"
+description = "TraMagNet magnetic signal denoising — paper reproduction scripts (see README)"
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
@@ -18,13 +14,3 @@ dependencies = [
   "rich>=13.0.0",
   "PyYAML>=6.0",
 ]
-
-[project.optional-dependencies]
-dev = ["pytest>=7.4.0"]
-
-[tool.setuptools.packages.find]
-where = ["src"]
-
-[tool.pytest.ini_options]
-testpaths = ["tests"]
-pythonpath = ["src", "main"]

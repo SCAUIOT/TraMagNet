@@ -41,64 +41,12 @@ def sample_latent(
     )
 
 
-_LEGACY_OUTPUT_RESIDUAL_SCALE_FACTOR = 0.5
-
-
-def legacy_z_output_gain_for_ckpt(
-    ckpt_state: dict[str, torch.Tensor],
-    *,
-    decoder_outputs_residual: bool,
-) -> float:
-    """
-    Legacy ``models/`` weights halve ``output_residual_scale`` in ``migrate_unet_state_dict``;
-    at inference/eval, apply ``1/factor`` in z-domain so physical-domain MSE/SNR match recorded tables (Pearson unchanged).
-    """
-    if not decoder_outputs_residual:
-        return 1.0
-    if "output_residual_scale" not in ckpt_state:
-        return 1.0
-    return 1.0 / float(_LEGACY_OUTPUT_RESIDUAL_SCALE_FACTOR)
-
-
-def migrate_unet_state_dict(state_dict: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
-    """
-    Drop legacy 1gan ``res_scale``; keep ``output_residual_scale`` (legacy decoder residual composition).
-
-    Legacy ``models/`` packaged weights use nominal ``output_residual_scale`` of 0.9; halve on load to match
-    fine-tuning forward. Eval/visualization multiplies by ``legacy_z_output_gain`` in ``lib.infer.fuse5_forward`` to restore amplitude.
-    """
-    out = dict(state_dict)
-    out.pop("res_scale", None)
-    if "output_residual_scale" in out:
-        out["output_residual_scale"] = (
-            out["output_residual_scale"].detach().float() * _LEGACY_OUTPUT_RESIDUAL_SCALE_FACTOR
-        ).to(out["output_residual_scale"].dtype)
-    return out
-
-
-def infer_decoder_outputs_residual(
-    ckpt_state: dict[str, torch.Tensor],
-    extra: dict | None = None,
-) -> bool:
-    """
-    Legacy weights: decoder outputs residual dx, denoised = ``noisy + output_residual_scale * dx``.
-    New weights: decoder directly outputs denoised (checkpoint **lacks** ``output_residual_scale`` key).
-    """
-    if isinstance(extra, dict) and extra.get("residual_compose") is False:
-        return False
-    if "output_residual_scale" not in ckpt_state:
-        return False
-    if isinstance(extra, dict) and extra.get("residual_compose") is True:
-        return True
-    return True
-
-
 def complete_unet_state_dict(model: "UNet", ckpt_state: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
     """Merge checkpoint with current model defaults (including ``output_residual_scale``)."""
-    m = migrate_unet_state_dict(dict(ckpt_state))
+    m = dict(ckpt_state)
+    m.pop("res_scale", None)
     cur = model.state_dict()
-    merged = {k: m[k] if k in m else cur[k] for k in cur.keys()}
-    return merged
+    return {k: m[k] if k in m else cur[k] for k in cur.keys()}
 
 
 class UNet(nn.Module):
@@ -107,8 +55,7 @@ class UNet(nn.Module):
 
     - Inputs: noisy (B,1,T), z (B, UNET_LATENT_CHANNELS, UNET_LATENT_LENGTH), T = ``UNET_INPUT_LENGTH``
     - Concat ``[noisy, x1, z_feat]`` (``x1 = noisy - dncnn_subtract_scale * DnCNN(noisy)``) → backbone
-    - Legacy (``decoder_outputs_residual=True``): ``y = noisy + output_residual_scale * dx``
-    - New: decoder **directly outputs** denoised
+    - Decoder directly outputs denoised signal
     """
 
     def __init__(self) -> None:
@@ -125,7 +72,6 @@ class UNet(nn.Module):
         )
         self.register_buffer("dncnn_subtract_scale", torch.tensor(0.85))
         self.register_buffer("output_residual_scale", torch.tensor(0.9))
-        self.decoder_outputs_residual = False
 
     def forward(self, noisy: torch.Tensor, z: torch.Tensor) -> torch.Tensor:
         if noisy.dim() != 3 or noisy.size(1) != 1 or noisy.size(2) != UNET_INPUT_LENGTH:
@@ -144,10 +90,7 @@ class UNet(nn.Module):
         z_up = F.interpolate(z, size=UNET_INPUT_LENGTH, mode="linear", align_corners=False)
         z_feat = self.z_proj(z_up)
         u = torch.cat([noisy, x1, z_feat], dim=1)
-        dx = self.unet(u)
-        if self.decoder_outputs_residual:
-            return noisy + self.output_residual_scale * dx
-        return dx
+        return self.unet(u)
 
 
 def _conv1d(in_ch: int, out_ch: int, *, k: int = 3, dilation: int = 1) -> nn.Conv1d:

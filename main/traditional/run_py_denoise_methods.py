@@ -4,8 +4,8 @@
 Morphological filter baselines (gradient wavelet / multi-SE).
 
 **Preprocessing protocol (important):** Unlike deep learning models in this repo
-(default: noisy-only normalization, no reference leakage), traditional filters here
-use the project's **paired reference/noisy offline evaluation** setting. reference signal
+(default: noisy-only normalization, no clean leakage), traditional filters here
+use the project's **paired reference/noisy offline evaluation** setting. Clean signal
 statistics may be used when aligning or plotting paired segments. Do not describe
 these results as blind deployment denoising; document the protocol in paper methods.
 
@@ -57,9 +57,6 @@ from data_common.viz_export import (
     save_triplet_figure,
 )
 
-_SUBWAY_NOISY = re.compile(r"^sample\d+_[xyz]\+subway\.txt$", re.IGNORECASE)
-
-
 @dataclass(frozen=True)
 class DenoiseTask:
     method_name: str
@@ -91,7 +88,7 @@ def _match_noisy_scale_to_reference(
 
 
 def _normalize_pair(c: np.ndarray, n: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-    """Same as 1/data/our_data_folder_dataset: match_scale + z-score with reference μ/σ."""
+    """Same as 1/data/our_data_folder_dataset: match_scale + z-score with clean μ/σ."""
     n = _match_noisy_scale_to_reference(c, n)
     mu = float(np.mean(c))
     sig = float(np.std(c)) + 1e-6
@@ -143,9 +140,7 @@ def _build_task(
     sp: PairSpec,
 ) -> DenoiseTask | None:
     noisy_path = sp.noisy_path
-    use_dual = ("+subway" in noisy_path.name.lower()) and subway_noisy_has_four_value_columns(
-        noisy_path
-    )
+    use_dual = subway_noisy_has_four_value_columns(noisy_path)
     if use_dual:
         tc, tst = read_two_channel_file(noisy_path)
         if tst.get("kept_lines", 0) < 2:
@@ -283,8 +278,10 @@ def main() -> None:
     )
     p.add_argument(
         "--reference-subdir",
+        "--reference-subdir",
         type=str,
         default="reference_signal",
+        dest="reference_subdir",
         help="Same as list_pair_specs",
     )
     p.add_argument(

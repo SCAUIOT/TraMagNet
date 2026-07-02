@@ -43,7 +43,6 @@ sys.path.insert(0, str(_FIVE))
 
 from common_train_cli import (  # noqa: E402
     add_common_train_arguments,
-    migrate_job_root_checkpoints_into_runs,
     resolve_train_out_dir,
     save_torch_checkpoint,
 )
@@ -435,39 +434,10 @@ def main(argv: list[str] | None = None) -> None:
     from data_common.train_data_factory import training_uses_pooled_data
 
     if training_uses_pooled_data(args):
-        from data_common.pooled_data_split import (
-            build_pooled_cv_split_manifest,
-            collect_pooled_group_keys,
-            parse_data_roots_arg,
-            write_pooled_split_manifest,
-        )
-        from data_common.train_data_factory import resolve_split_manifest_for_args
+        from data_common.pooled_data_split import parse_data_roots_arg
 
         entries = parse_data_roots_arg(str(args.data_roots), repo=_REPO)
         data_root = str(entries[0][1])
-        pool_tag = str(getattr(args, "pool_tag", None) or "data134").strip()
-        manifest_path = resolve_split_manifest_for_args(args, repo=_REPO)
-        if not manifest_path.is_file() and not bool(getattr(args, "no_cv_split_manifest", False)):
-            gkeys = collect_pooled_group_keys(
-                entries,
-                reference_subdir=args.reference_subdir,
-                noisy_subdir=args.noisy_subdir,
-                band=args.band,
-                subway_dual_channels=bool(args.subway_dual_channels),
-                strict_all_bands=bool(args.strict_all_bands),
-            )
-            write_pooled_split_manifest(
-                manifest_path,
-                build_pooled_cv_split_manifest(
-                    gkeys,
-                    pool_tag=pool_tag,
-                    root_entries=entries,
-                    train_ratio=float(args.train_ratio),
-                    seed=int(args.seed),
-                    shuffle_split=bool(args.shuffle_split),
-                    cv_folds=int(args.cv_folds),
-                ),
-            )
     else:
         data_root = resolve_dataset_root(args.data_root, repo=_REPO)
         if Path(data_root).resolve() != Path(args.data_root).expanduser().resolve():
@@ -559,7 +529,6 @@ def _train_one_fold_impl(args: argparse.Namespace, fold: int, out_path: Path) ->
     device = pick_device(cfg.device)
     out_path = Path(cfg.out_dir)
     out_path.mkdir(parents=True, exist_ok=True)
-    migrate_job_root_checkpoints_into_runs(out_path, log_prefix="[TraMagNet]")
     (out_path / "config.txt").write_text(str(asdict(cfg)), encoding="utf-8")
 
     pin = device.type == "cuda"

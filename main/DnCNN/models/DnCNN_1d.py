@@ -17,10 +17,6 @@ class DnCNN1DConfig:
     padding: int = 1
     use_bn: bool = True
     predict_residual: bool = True
-    # Classic plain DnCNN: total conv layers (first + middle + last); used only when legacy_plain=True
-    depth: int = 18
-    # Enhanced structure (default): shallow head → [Conv+BN+ReLU]×middle_depth → Residual×N → Attention → tail
-    legacy_plain: bool = False
     middle_depth: int = 10
     num_residual_blocks: int = 5
     # Off by default: raw x*sigmoid gating can squash features toward 0, yielding pred_noise≈0 and output≈noisy; use --use-attention when needed
@@ -115,11 +111,8 @@ class ChannelTemporalAttention1D(nn.Module):
 
 class DnCNN1D(nn.Module):
     """
-    1D denoising network.
-
-    - **Default (legacy_plain=False)**: Head Conv+ReLU → [Conv+BN+ReLU]×middle_depth → Residual×num_residual_blocks
-      → channel+temporal Attention → final Conv predicts noise; forward ``x - noise``.
-    - **legacy_plain=True**: Original single Sequential DnCNN (depth controls total conv layers).
+    1D denoising network: Head Conv+ReLU → [Conv+BN+ReLU]×middle_depth → Residual×num_residual_blocks
+    → channel+temporal Attention → final Conv predicts noise; forward ``clean = x - noise``.
     """
 
     def __init__(self, cfg: DnCNN1DConfig = DnCNN1DConfig()) -> None:
@@ -128,31 +121,6 @@ class DnCNN1D(nn.Module):
         k = int(cfg.kernel_size)
         p = int(cfg.padding)
         f = int(cfg.features)
-
-        if cfg.legacy_plain:
-            self._build_plain_stack(cfg, k, p, f)
-        else:
-            self._build_enhanced(cfg, k, p, f)
-
-    def _build_plain_stack(self, cfg: DnCNN1DConfig, k: int, p: int, f: int) -> None:
-        layers: list[nn.Module] = []
-        layers.append(nn.Conv1d(cfg.in_channels, f, kernel_size=k, stride=1, padding=p, bias=True))
-        layers.append(nn.ReLU(inplace=True))
-        middle = max(1, int(cfg.depth) - 2)
-        for _ in range(middle):
-            layers.append(nn.Conv1d(f, f, kernel_size=k, stride=1, padding=p, bias=not cfg.use_bn))
-            if cfg.use_bn:
-                layers.append(nn.BatchNorm1d(f))
-            layers.append(nn.ReLU(inplace=True))
-        layers.append(nn.Conv1d(f, cfg.out_channels, kernel_size=k, stride=1, padding=p, bias=True))
-        self.net = nn.Sequential(*layers)
-        self.head = None
-        self.middle = None
-        self.res_blocks = None
-        self.attn = None
-        self.tail = None
-
-    def _build_enhanced(self, cfg: DnCNN1DConfig, k: int, p: int, f: int) -> None:
         self.net = None
         self.head = nn.Sequential(
             nn.Conv1d(cfg.in_channels, f, kernel_size=k, stride=1, padding=p, bias=True),
@@ -180,8 +148,6 @@ class DnCNN1D(nn.Module):
 
     def predict_noise(self, x: torch.Tensor) -> torch.Tensor:
         """Predict additive noise (residual); same quantity subtracted in ``forward``."""
-        if self.cfg.legacy_plain:
-            return self.net(x)
         assert self.head is not None and self.tail is not None
         feat = self.head(x)
         feat = self.middle(feat)
@@ -196,8 +162,8 @@ class DnCNN1D(nn.Module):
         return pred
 
 
-def dncnn_config_from_argparse(args: argparse.Namespace) -> DnCNN1DConfig:
-    """Shared by train / infer / viz: requires features, depth, legacy_plain, middle_depth, num_residual, attention, attention_reduction."""
+def DnCNN_config_from_argparse(args: argparse.Namespace) -> DnCNN1DConfig:
+    """Shared by train / infer / viz: requires features, middle_depth, num_residual, attention, attention_reduction."""
     ua = bool(getattr(args, "use_attention", False))
     na = bool(getattr(args, "no_attention", False))
     if ua and na:
@@ -205,8 +171,6 @@ def dncnn_config_from_argparse(args: argparse.Namespace) -> DnCNN1DConfig:
     use_attention = ua and not na
     return DnCNN1DConfig(
         features=int(args.features),
-        depth=int(args.depth),
-        legacy_plain=bool(getattr(args, "legacy_plain", False)),
         middle_depth=int(getattr(args, "middle_depth", 10)),
         num_residual_blocks=int(getattr(args, "num_residual", 5)),
         use_attention=use_attention,

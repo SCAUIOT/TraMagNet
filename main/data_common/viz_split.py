@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Literal
 
 from data_common.our_data_split import DataSplitRole, sample_ids_for_data_split
+from data_common.flat_pairing import sample_id_from_reference_path
 
 try:
     BooleanOptionalAction = argparse.BooleanOptionalAction
@@ -64,8 +65,6 @@ except AttributeError:
 VizSplitName = Literal["test", "holdout", "train", "all", "cv_train", "cv_val"]
 
 VIZ_SPLIT_CHOICES: tuple[str, ...] = ("test", "holdout", "train", "all", "cv_train", "cv_val")
-
-_REFERENCE_SID_RE = re.compile(r"^sample(\d+)_([xyz])\.txt$", re.IGNORECASE)
 
 
 def add_viz_split_arguments(
@@ -210,14 +209,16 @@ def chosen_sample_ids_from_specs(
     shuffle_split: bool,
     cv_folds: int = 0,
     cv_fold: int = 0,
+    data_root: Path | None = None,
 ) -> set[str]:
     """Filter sample ids from ``list_pair_specs`` results (subway dual-channel shares sid)."""
+    root = Path(data_root) if data_root is not None else None
     by_sid: dict[str, list[int]] = {}
     for i, sp in enumerate(specs):
-        m = _REFERENCE_SID_RE.match(Path(sp.reference_path).name)
-        if not m:
+        sid = sample_id_from_reference_path(sp.reference_path, data_root=root) if root else sample_id_from_reference_path(sp.reference_path)
+        if not sid:
             continue
-        by_sid.setdefault(m.group(1), []).append(i)
+        by_sid.setdefault(sid, []).append(i)
     sids = sorted(by_sid.keys(), key=lambda s: int(s))
     if not sids:
         return set()

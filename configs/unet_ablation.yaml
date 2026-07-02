@@ -2,7 +2,6 @@
 model: UNet-only
 data_roots: data1,data3,data4
 pool_tag: data134
-split_manifest: splits/ztest5_data134_manifest.json
 epochs: 2000
 batch_size: 32
 lr: 2.0e-5

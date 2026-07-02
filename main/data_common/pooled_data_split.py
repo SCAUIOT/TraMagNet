@@ -1,19 +1,17 @@
 """
 Pooled split across data1 / data3 / data4 (and other roots): group key ``{dataset_dir}/{sample_id}`` (e.g. ``data3/42``).
 
-- Apply 8:2 holdout + K-fold on the full pool of sample ids (same ``seed`` / ``train_ratio`` as ``our_data_split``).
-- Write holdout set to manifest for ``loss_eval`` / ``eval_metrics`` to filter test segments per ``data-root``.
-- ztest5 training uses the train pool (and CV train/val folds) only; holdout test set is excluded.
+Apply 8:2 holdout + K-fold on the full pool of sample ids (same ``seed`` / ``train_ratio`` as ``our_data_split``).
+Manifest builders below are used for optional run-dir JSON export, not for reading ``splits/`` at startup.
 """
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
-from data_common.our_data_split import build_cv_split_manifest, sample_ids_for_data_split, write_cv_split_manifest
+from data_common.our_data_split import build_cv_split_manifest, write_cv_split_manifest
 from data_common.pair_specs import list_pair_specs
-from data_common.rename_manifest import sample_id_from_reference_path
+from data_common.flat_pairing import sample_id_from_reference_path
 from data_common.dataset_paths import (
     DEFAULT_POOL_ROOTS,
     DEFAULT_POOL_TAG,
@@ -51,7 +49,7 @@ def sort_group_keys(keys: list[str], *, tag_order: list[str] | None = None) -> l
 
 
 def parse_data_roots_arg(raw: str, *, repo: Path) -> list[tuple[str, Path]]:
-    """``data1,data3,data4`` or ``../datasets/hv_cable``; tag keeps CLI name (matches manifest group keys)."""
+    """``data1,data3,data4`` or ``../datasets/high-voltage_cable``; tag keeps CLI name (matches manifest group keys)."""
     out: list[tuple[str, Path]] = []
     for part in str(raw).split(","):
         part = part.strip()
@@ -133,81 +131,3 @@ def build_pooled_cv_split_manifest(
 def write_pooled_split_manifest(path: str | Path, manifest: dict) -> None:
     write_cv_split_manifest(path, manifest)
 
-
-def load_pooled_split_manifest(path: str | Path) -> dict:
-    p = Path(path)
-    return json.loads(p.read_text(encoding="utf-8"))
-
-
-def default_ztest5_pool_manifest_path(repo: Path, pool_tag: str = ZTEST5_DEFAULT_POOL_TAG) -> Path:
-    return (repo / "splits" / f"ztest5_{pool_tag}_manifest.json").resolve()
-
-
-def group_keys_for_role(
-    manifest: dict,
-    *,
-    role: str,
-    cv_fold: int = 0,
-) -> list[str]:
-    """``role``: ``holdout_test`` | ``cv_train`` | ``cv_val`` | ``train_pool``。"""
-    r = str(role).lower().strip()
-    if r in ("holdout_test", "test", "holdout"):
-        return list(manifest.get("holdout_test_group_keys") or manifest.get("holdout_test_sample_ids") or [])
-    if r == "train_pool":
-        return list(manifest.get("train_pool_group_keys") or manifest.get("train_pool_sample_ids") or [])
-    folds = manifest.get("folds") or []
-    fi = int(cv_fold)
-    for fold in folds:
-        if int(fold.get("fold", -1)) == fi:
-            if r == "cv_train":
-                return list(fold.get("train_group_keys") or fold.get("train_sample_ids") or [])
-            if r == "cv_val":
-                return list(fold.get("val_group_keys") or fold.get("val_sample_ids") or [])
-    return []
-
-
-def holdout_sample_ids_for_dataset_tag(manifest: dict, dataset_tag: str) -> set[str]:
-    """Sample id set in the holdout test set for one data root."""
-    tag = str(dataset_tag).strip()
-    out: set[str] = set()
-    for gk in group_keys_for_role(manifest, role="holdout_test"):
-        t, sid = parse_group_key(gk)
-        if t == tag and sid:
-            out.add(sid)
-    return out
-
-
-def ensure_ztest5_pool_manifest(
-    *,
-    repo: Path,
-    pool_tag: str,
-    root_entries: list[tuple[str, Path]],
-    train_ratio: float,
-    seed: int,
-    shuffle_split: bool,
-    cv_folds: int,
-    force: bool = False,
-) -> Path:
-    """Write manifest to default path when missing or when ``force``; return path."""
-    path = default_ztest5_pool_manifest_path(repo, pool_tag)
-    if path.is_file() and not force:
-        return path
-    gkeys = collect_pooled_group_keys(root_entries)
-    manifest = build_pooled_cv_split_manifest(
-        gkeys,
-        pool_tag=pool_tag,
-        root_entries=root_entries,
-        train_ratio=float(train_ratio),
-        seed=int(seed),
-        shuffle_split=bool(shuffle_split),
-        cv_folds=int(cv_folds),
-    )
-    write_pooled_split_manifest(path, manifest)
-    print(
-        f"[pooled-split] wrote {path.name}: pool={pool_tag} "
-        f"n_groups={manifest.get('n_unique_samples')} "
-        f"holdout={len(manifest.get('holdout_test_group_keys') or [])} "
-        f"train_pool={len(manifest.get('train_pool_group_keys') or [])} cv_folds={cv_folds}",
-        flush=True,
-    )
-    return path

@@ -1,9 +1,9 @@
 """
-Repo-root shared data layer: data1/data2/data3 read_official and training code can read txt and enumerate pairs here.
+Shared data layer: txt parsing and (clean, noisy) pairing by matching ``sample{i}.txt`` names.
 
-- ``txt_io``: line-by-line parsing matching legacy ``2/data/our_data_dataset`` + dual-channel subway files
-- ``pair_specs``: auto-detect band layout (data1/2) or subway layout (data3) pairs by directory
-- ``viz_export``: triple-curve export (forwarded from each data*/viz_export.py)
+- ``txt_io``: 3- or 4-column flat ``sample{i}.txt`` parsing
+- ``pair_specs``: enumerate pairs from matching filenames in reference_signal/ and noise_signal/
+- ``viz_export``: triple-curve figure export
 """
 
 from . import pair_specs, txt_io, viz_export  # noqa: F401

@@ -1,4 +1,4 @@
-"""Signal preprocessing without reference-statistics leakage on noisy input."""
+"""Signal preprocessing without clean-statistics leakage on noisy input."""
 
 from __future__ import annotations
 
@@ -25,9 +25,9 @@ def mean_std(x: torch.Tensor, *, eps: float) -> tuple[torch.Tensor, torch.Tensor
 
 
 def affine_match_noisy_to_reference(
-    noisy: torch.Tensor, reference: torch.Tensor, *, eps: float
+    noisy: torch.Tensor, clean: torch.Tensor, *, eps: float
 ) -> torch.Tensor:
-    mu_c, sig_c = mean_std(reference, eps=eps)
+    mu_c, sig_c = mean_std(clean, eps=eps)
     mu_n, sig_n = mean_std(noisy, eps=eps)
     return (noisy - mu_n) * (sig_c / sig_n) + mu_c
 
@@ -37,12 +37,12 @@ def zscore(x: torch.Tensor, mu: torch.Tensor, sig: torch.Tensor) -> torch.Tensor
 
 
 def normalize_pair(
-    reference: torch.Tensor,
+    clean: torch.Tensor,
     noisy: torch.Tensor,
     cfg: NormalizationConfig,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Apply training/eval preprocessing. Default uses only noisy statistics."""
-    reference_out = reference
+    reference_out = clean
     noisy_out = noisy
 
     if cfg.match_noisy_scale_to_reference:

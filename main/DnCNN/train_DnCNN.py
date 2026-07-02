@@ -4,27 +4,22 @@ import argparse
 import shutil
 import sys
 import time
-from dataclasses import asdict, replace
+from dataclasses import asdict
 from pathlib import Path
 
 import torch
 from torch.utils.data import DataLoader
 
 from data.our_data_dataset import OurDataConfig, OurDataDataset
-from models.dncnn_1d import (
+from models.DnCNN_1d import (
     DnCNN1D,
     DnCNN1DConfig,
-    dncnn_config_from_argparse,
+    DnCNN_config_from_argparse,
     masked_l1,
     masked_loss,
     masked_mse,
     masked_temporal_mse,
 )
-
-
-def _is_legacy_plain_dncnn_state_dict(sd: dict) -> bool:
-    """Legacy single-stack DnCNN uses net.* keys; enhanced structure uses head./middle./res_blocks. etc."""
-    return any(k.startswith("net.") for k in sd.keys())
 
 
 def pick_device(preferred: str) -> torch.device:
@@ -164,7 +159,7 @@ def _rich_make_panel(
         diag_block.append("\n[Diagnostics · MSE, independent of training --loss]\n", style="bold")
         diag_block.append(
             f"  MSE(denoised,noisy)={mse_a * ls_log:.6f}  "
-            f"MSE(denoised,reference)={mse_b * ls_log:.6f}  "
+            f"MSE(denoised,clean)={mse_b * ls_log:.6f}  "
             f"MSE(noisy,reference)={mse_c * ls_log:.6f}\n",
             style="white",
         )
@@ -273,7 +268,7 @@ def _build_full_epoch_lines(
                 f"    MSE(denoised, reference) = {mse_b * ls_log:.6f}",
                 f"    MSE(noisy, reference) = {mse_c * ls_log:.6f}",
                 "    Dimensionless ratios: A/C = MSE(denoised,noisy)/MSE(noisy,reference), "
-                "B/C = MSE(denoised,reference)/MSE(noisy,reference), A/B = MSE(denoised,noisy)/MSE(denoised,reference)",
+                "B/C = MSE(denoised,clean)/MSE(noisy,reference), A/B = MSE(denoised,noisy)/MSE(denoised,clean)",
                 f"    A/C = {ac:.4f}    B/C = {bc:.4f}    A/B = {ab:.4f}{tag}",
                 "    Reference: identity copy-noisy ≈ A/C→0, B/C→1; ideal denoise ≈ A/C→1, B/C→0.",
             ]
@@ -379,7 +374,7 @@ def evaluate(
 ) -> tuple[float, float]:
     """
     Returns (val metric, oracle identity baseline) using the same masked_loss as training.
-    Oracle: assume denoised=noisy, i.e. noisy-vs-reference error (identity mapping baseline).
+    Oracle: assume denoised=noisy, i.e. noisy-vs-clean error (identity mapping baseline).
     """
     model.eval()
     total = 0.0
@@ -454,13 +449,7 @@ def _add_dncnn_arguments(p: argparse.ArgumentParser) -> None:
         choices=("pad_edge", "pad_zero", "resample_linear"),
         help="How to resize to segment-length (default matches UNet whole-segment interpolation).",
     )
-    p.add_argument("--depth", type=int, default=18, help="Only with --legacy-plain: total conv layers (legacy).")
     p.add_argument("--features", type=int, default=64)
-    p.add_argument(
-        "--legacy-plain",
-        action="store_true",
-        help="Use original single-stack DnCNN (matches old checkpoints; default off: Conv×N + residual + attention).",
-    )
     p.add_argument("--middle-depth", type=int, default=10, help="Enhanced structure: number of Conv+BN+ReLU blocks.")
     p.add_argument("--num-residual", type=int, default=5, dest="num_residual", help="Enhanced structure: number of residual blocks.")
     p.add_argument(
@@ -512,7 +501,7 @@ def _add_dncnn_arguments(p: argparse.ArgumentParser) -> None:
         type=float,
         default=0.0,
         dest="grad_match_weight",
-        help="Add coefficient × MSE(first temporal diff denoised vs reference); 0 off. Try 0.05~0.1 to align peaks.",
+        help="Add coefficient × MSE(first temporal diff denoised vs clean); 0 off. Try 0.05~0.1 to align peaks.",
     )
     p.add_argument(
         "--identity-diag",
@@ -526,7 +515,7 @@ def _add_dncnn_arguments(p: argparse.ArgumentParser) -> None:
         default=False,
         dest="match_noisy_scale",
         help=(
-            "Affine noisy to reference segment mean/std (off by default to avoid test leakage). "
+            "Affine noisy to clean segment mean/std (off by default to avoid test leakage). "
             "Enable with --match-noisy-scale."
         ),
     )
@@ -536,7 +525,7 @@ def _add_dncnn_arguments(p: argparse.ArgumentParser) -> None:
         default=False,
         dest="zscore_using_reference",
         help=(
-            "Standardize with reference mu,sigma (off by default). Prefer noisy_sample (see OurDataConfig). "
+            "Standardize with clean mu,sigma (off by default). Prefer noisy_sample (see OurDataConfig). "
             "Enable with --zscore-using-reference."
         ),
     )
@@ -648,7 +637,7 @@ def train_one_fold(args: argparse.Namespace, fold: int, out_path: Path) -> None:
             m0 = b0.get("mask", None)
             mse_nc0 = float(masked_mse(n0, c0, m0).item())
 
-    cfg: DnCNN1DConfig = dncnn_config_from_argparse(args)
+    cfg: DnCNN1DConfig = DnCNN_config_from_argparse(args)
     model = DnCNN1D(cfg).to(device)
 
     opt = torch.optim.Adam(model.parameters(), lr=lr)
@@ -663,25 +652,7 @@ def train_one_fold(args: argparse.Namespace, fold: int, out_path: Path) -> None:
     if args.auto_resume and last_path.is_file():
         ckpt = torch.load(last_path, map_location=device)
         sd: dict = ckpt["model"]
-        try:
-            model.load_state_dict(sd, strict=True)
-        except RuntimeError as err:
-            if _is_legacy_plain_dncnn_state_dict(sd) and not cfg.legacy_plain:
-                print(
-                    "[resume] checkpoint is legacy plain DnCNN (keys net.*), incompatible with enhanced structure; "
-                    "auto-switched to legacy_plain for resume.",
-                    flush=True,
-                )
-                print(
-                    "[resume] To train enhanced structure from scratch, delete/move last.pt / best.pt or use --no-auto-resume.",
-                    flush=True,
-                )
-                cfg = replace(cfg, legacy_plain=True)
-                model = DnCNN1D(cfg).to(device)
-                opt = torch.optim.Adam(model.parameters(), lr=lr)
-                model.load_state_dict(sd, strict=True)
-            else:
-                raise err
+        model.load_state_dict(sd, strict=True)
         if "opt" in ckpt:
             try:
                 opt.load_state_dict(ckpt["opt"])
@@ -707,12 +678,12 @@ def train_one_fold(args: argparse.Namespace, fold: int, out_path: Path) -> None:
         if mse_nc0 is not None:
             print(
                 f"[data sanity] first batch MSE(noisy, reference) = {mse_nc0:.6f} | "
-                f"noisy aligned to reference amplitude = {args.match_noisy_scale} | "
-                f"z-score using reference segment = {args.zscore_using_reference}",
+                f"noisy aligned to clean amplitude = {args.match_noisy_scale} | "
+                f"z-score using clean segment = {args.zscore_using_reference}",
                 flush=True,
             )
         print(
-            "[task] Supervision: predict noise pred_noise ≈ (noisy-reference); "
+            "[task] Supervision: predict noise pred_noise ≈ (noisy-clean); "
             "validation: masked_loss(denoised, reference).",
             flush=True,
         )
@@ -725,7 +696,7 @@ def train_one_fold(args: argparse.Namespace, fold: int, out_path: Path) -> None:
     elif log_style == "rich":
         if float(args.reference_l1_weight) > 0 or float(args.grad_match_weight) > 0:
             print(
-                f"[train] extra losses: reference_l1={args.reference_l1_weight} grad_match={args.grad_match_weight}",
+                f"[train] extra losses: clean_l1={args.reference_l1_weight} grad_match={args.grad_match_weight}",
                 flush=True,
             )
     else:
@@ -831,7 +802,7 @@ def train_one_fold(args: argparse.Namespace, fold: int, out_path: Path) -> None:
                     if ac < 0.15 and bc > 0.85:
                         tag = " [warn: near identity noisy→output]"
                     elif bc < 0.35 and ac > 0.5:
-                        tag = " [trend: moving away from noisy, toward reference]"
+                        tag = " [trend: moving away from noisy, toward clean]"
                 diag = (mse_a, mse_b, mse_c, ac, bc, ab, tag)
     
             if val_loss < best_val:

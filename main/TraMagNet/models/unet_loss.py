@@ -29,9 +29,9 @@ LOSS_TERM_SCALE_L1: float = 0.20
 LOSS_TERM_SCALE_STFT: float = 0.33
 
 
-def masked_l1_mean(pred: torch.Tensor, reference: torch.Tensor, mask: torch.Tensor | None) -> torch.Tensor:
+def masked_l1_mean(pred: torch.Tensor, clean: torch.Tensor, mask: torch.Tensor | None) -> torch.Tensor:
     """Pointwise absolute error in time domain; if ``mask`` is present (consistent with ``OurDataDataset``), weighted mean over valid positions."""
-    diff = (pred - reference).abs()
+    diff = (pred - clean).abs()
     if mask is None:
         return diff.mean()
     m = mask.to(pred.device).float()
@@ -40,12 +40,12 @@ def masked_l1_mean(pred: torch.Tensor, reference: torch.Tensor, mask: torch.Tens
     return (diff * m).sum() / m.sum().clamp_min(_LOSS_UNIT_EPS)
 
 
-def multi_scale_stft_mag_l1(pred: torch.Tensor, reference: torch.Tensor) -> torch.Tensor:
+def multi_scale_stft_mag_l1(pred: torch.Tensor, clean: torch.Tensor) -> torch.Tensor:
     """
-    ``pred`` / ``reference``: (B, 1, T). At each scale, per-bin L1 on ``|STFT(x)|`` vs ``|STFT(y)|``, then averaged over scales.
+    ``pred`` / ``clean``: (B, 1, T). At each scale, per-bin L1 on ``|STFT(x)|`` vs ``|STFT(y)|``, then averaged over scales.
     """
     x = pred.squeeze(1)
-    y = reference.squeeze(1)
+    y = clean.squeeze(1)
     acc: torch.Tensor | None = None
     for n_fft, win_length, hop in MR_STFT_SCALES:
         w = torch.hann_window(win_length, device=x.device, dtype=x.dtype)
@@ -163,7 +163,7 @@ def combine_normalized_losses(
 
 def supervised_unet_loss(
     pred: torch.Tensor,
-    reference: torch.Tensor,
+    clean: torch.Tensor,
     mask: torch.Tensor | None,
     *,
     loss_l1_weight: float,
@@ -174,9 +174,9 @@ def supervised_unet_loss(
     STFT is skipped when ``loss_stft_weight == 0``.
     """
     _, _, ws = resolve_mix_weights(0.0, loss_l1_weight, loss_stft_weight)
-    l_l1 = masked_l1_mean(pred, reference, mask)
+    l_l1 = masked_l1_mean(pred, clean, mask)
     if ws > 0.0:
-        l_stft = multi_scale_stft_mag_l1(pred, reference)
+        l_stft = multi_scale_stft_mag_l1(pred, clean)
         total = combine_normalized_losses(
             l_mse=None,
             l_l1=l_l1,
@@ -200,7 +200,7 @@ def supervised_unet_loss(
 
 def mse_time_frequency_loss(
     pred: torch.Tensor,
-    reference: torch.Tensor,
+    clean: torch.Tensor,
     mask: torch.Tensor | None,
     *,
     loss_mse_weight: float,
@@ -212,10 +212,10 @@ def mse_time_frequency_loss(
     ``total`` = fixed-scale aligned weighted mix (weights as 0~1 proportions).
     """
     wm, wl, ws = resolve_mix_weights(loss_mse_weight, loss_l1_weight, loss_stft_weight)
-    l_mse = F.mse_loss(pred, reference)
-    l_l1 = masked_l1_mean(pred, reference, mask)
+    l_mse = F.mse_loss(pred, clean)
+    l_l1 = masked_l1_mean(pred, clean, mask)
     if ws > 0.0:
-        l_stft = multi_scale_stft_mag_l1(pred, reference)
+        l_stft = multi_scale_stft_mag_l1(pred, clean)
     else:
         l_stft = l_l1.new_zeros(())
     total = combine_normalized_losses(

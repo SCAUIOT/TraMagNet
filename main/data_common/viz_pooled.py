@@ -3,7 +3,7 @@ Pooled visualize_data export (``data134`` = data1 + data3 + data4).
 
 With ``--data-root data134``, load ``data134_*`` weights once and export each library's segments to
 ``output/<backend>/data134/{data1|data3|data4}/{image,result}`` (not mixed in one folder).
-Split matches ``loss_eval`` (``splits/ztest5_data134_manifest.json``).
+Split is computed inline from ``train_ratio`` / ``seed`` (same as training).
 """
 
 from __future__ import annotations
@@ -12,7 +12,7 @@ import argparse
 from dataclasses import dataclass
 from pathlib import Path
 
-from data_common.eval_split import build_eval_segment_keys, format_eval_split_banner, resolve_eval_split_manifest_path
+from data_common.eval_split import build_eval_segment_keys, format_eval_split_banner
 from data_common.pooled_data_split import (
     ZTEST5_DEFAULT_DATA_ROOTS,
     ZTEST5_DEFAULT_POOL_TAG,
@@ -33,7 +33,6 @@ class VizPoolPlan:
     output_tag: str
     is_pooled: bool
     targets: tuple[VizExportTarget, ...]
-    split_manifest: Path | None
 
 
 def add_viz_pooled_arguments(parser: argparse.ArgumentParser) -> None:
@@ -52,13 +51,6 @@ def add_viz_pooled_arguments(parser: argparse.ArgumentParser) -> None:
         dest="data_roots",
         help=f"Comma-separated data roots for pooled train/eval (default {','.join(ZTEST5_DEFAULT_DATA_ROOTS)}).",
     )
-    g.add_argument(
-        "--split-manifest",
-        type=str,
-        default=None,
-        dest="split_manifest",
-        help="Pooled split manifest; if omitted, try splits/ztest5_<pool>_manifest.json.",
-    )
 
 
 def is_pooled_viz_data_root_arg(path_str: str, *, repo: Path) -> bool:
@@ -70,48 +62,23 @@ def is_pooled_viz_data_root_arg(path_str: str, *, repo: Path) -> bool:
     if slug == ZTEST5_DEFAULT_POOL_TAG.casefold():
         p = (repo / raw).expanduser() if not Path(raw).expanduser().is_absolute() else Path(raw).expanduser()
         if p.is_dir():
-            reference = p / "reference_signal"
-            if reference.is_dir():
+            clean = p / "reference_signal"
+            if clean.is_dir():
                 return False
         return True
     return False
 
 
 def _data_tag_from_root(data_root: str) -> str:
-    s = (data_root or ".").strip()
-    if s in (".", ""):
-        return "data"
-    try:
-        return Path(s).expanduser().resolve().name
-    except OSError:
-        return Path(s).name or "data"
+    from data_common.dataset_paths import dataset_tag_for_path
+
+    return dataset_tag_for_path(Path(data_root))
 
 
 def _resolve_data_root(path_str: str, *, repo: Path) -> str:
-    s = (path_str or ".").strip()
-    if s in (".", ""):
-        return str(Path(".").resolve())
-    p = Path(s).expanduser()
-    if p.is_absolute():
-        return str(p)
-    repo_p = (repo / p).resolve()
-    if repo_p.exists():
-        return str(repo_p)
-    return str(p)
+    from data_common.resolve_dataset_root import resolve_dataset_root
 
-
-def resolve_viz_split_manifest(
-    args: argparse.Namespace,
-    repo: Path,
-    *,
-    pool_tag: str,
-    pooled: bool,
-) -> Path | None:
-    """Single-dataset data1/data3/data4 and pooled data134 both default to ``splits/ztest5_<pool>_manifest.json``."""
-    explicit = getattr(args, "split_manifest", None)
-    if explicit is not None and str(explicit).strip():
-        return resolve_eval_split_manifest_path(repo, explicit, pool_tag=pool_tag)
-    return resolve_eval_split_manifest_path(repo, None, pool_tag=pool_tag)
+    return resolve_dataset_root(path_str, repo=repo)
 
 
 def resolve_viz_pool_plan(
@@ -131,7 +98,6 @@ def resolve_viz_pool_plan(
             root_entries = parse_data_roots_arg(str(roots_raw), repo=repo)
         else:
             root_entries = parse_data_roots_arg(",".join(ZTEST5_DEFAULT_DATA_ROOTS), repo=repo)
-        split_manifest = resolve_viz_split_manifest(args, repo, pool_tag=pool_tag, pooled=True)
         targets: list[VizExportTarget] = []
         for ds_tag, root_p in root_entries:
             allowed = build_eval_segment_keys(
@@ -145,7 +111,6 @@ def resolve_viz_pool_plan(
                 noisy_subdir=str(args.noisy_subdir),
                 cv_folds=int(getattr(args, "cv_folds", 0)),
                 cv_fold=int(getattr(args, "cv_fold", 0)),
-                split_manifest_path=split_manifest,
             )
             print(
                 format_eval_split_banner(
@@ -154,7 +119,6 @@ def resolve_viz_pool_plan(
                     train_ratio=float(args.train_ratio),
                     seed=int(args.seed),
                     shuffle_split=bool(args.shuffle_split),
-                    split_manifest_path=split_manifest,
                 )
                 + f" data_root={ds_tag}",
                 flush=True,
@@ -170,40 +134,33 @@ def resolve_viz_pool_plan(
             output_tag=pool_tag,
             is_pooled=True,
             targets=tuple(targets),
-            split_manifest=split_manifest,
         )
 
     data_root = _resolve_data_root(data_root_arg, repo=repo)
     tag = _data_tag_from_root(data_root)
-    pool_tag = str(getattr(args, "pool_tag", ZTEST5_DEFAULT_POOL_TAG)).strip() or ZTEST5_DEFAULT_POOL_TAG
-    manifest = resolve_viz_split_manifest(args, repo, pool_tag=pool_tag, pooled=False)
-    allowed = None
-    if manifest is not None:
-        allowed = build_eval_segment_keys(
-            Path(data_root),
+    allowed = build_eval_segment_keys(
+        Path(data_root),
+        split=split,
+        train_ratio=float(args.train_ratio),
+        seed=int(args.seed),
+        shuffle_split=bool(args.shuffle_split),
+        band=str(args.band),
+        reference_subdir=str(args.reference_subdir),
+        noisy_subdir=str(args.noisy_subdir),
+        cv_folds=int(getattr(args, "cv_folds", 0)),
+        cv_fold=int(getattr(args, "cv_fold", 0)),
+    )
+    print(
+        format_eval_split_banner(
             split=split,
+            keys=allowed,
             train_ratio=float(args.train_ratio),
             seed=int(args.seed),
             shuffle_split=bool(args.shuffle_split),
-            band=str(args.band),
-            reference_subdir=str(args.reference_subdir),
-            noisy_subdir=str(args.noisy_subdir),
-            cv_folds=int(getattr(args, "cv_folds", 0)),
-            cv_fold=int(getattr(args, "cv_fold", 0)),
-            split_manifest_path=manifest,
         )
-        print(
-            format_eval_split_banner(
-                split=split,
-                keys=allowed,
-                train_ratio=float(args.train_ratio),
-                seed=int(args.seed),
-                shuffle_split=bool(args.shuffle_split),
-                split_manifest_path=manifest,
-            )
-            + f" data_root={tag}",
-            flush=True,
-        )
+        + f" data_root={tag}",
+        flush=True,
+    )
     return VizPoolPlan(
         output_tag=tag,
         is_pooled=False,
@@ -214,7 +171,6 @@ def resolve_viz_pool_plan(
                 allowed_keys=allowed,
             ),
         ),
-        split_manifest=manifest if manifest and manifest.is_file() else None,
     )
 
 
@@ -228,16 +184,7 @@ def split_kwargs_for_viz_target(
     cv_folds: int,
     cv_fold: int,
 ) -> dict[str, object]:
-    """When manifest key filter is active, build dataset with ``split=all``, then filter segments via ``allowed_keys``."""
-    if allowed_keys is not None:
-        return our_data_dataset_split_kwargs(
-            "all",
-            train_ratio=train_ratio,
-            seed=seed,
-            shuffle_split=shuffle_split,
-            cv_folds=cv_folds,
-            cv_fold=cv_fold,
-        )
+    """Build dataset for ``split`` (e.g. test holdout); ``allowed_keys`` filters export indices only."""
     return our_data_dataset_split_kwargs(
         split,
         train_ratio=train_ratio,

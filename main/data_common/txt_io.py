@@ -1,8 +1,5 @@
 # -*- coding: utf-8 -*-
-"""
-Txt parsing consistent with legacy ``2/data/our_data_dataset._parse_timeseries_file_with_meta``;
-shared by data1/2/3 read_official and in-repo training code, avoiding sys.path hacks to directory 2.
-"""
+"""Txt parsing for flat ``sample{i}.txt`` files (3- or 4-column); shared by training and evaluation."""
 
 from __future__ import annotations
 

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import re
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -16,14 +15,14 @@ if str(_REPO) not in sys.path:
 from data_common.our_data_split import infer_split_role, sample_ids_for_data_split
 from data_common.pair_specs import list_pair_specs
 from data_common.normalization import config_from_dataset_flags, normalize_pair
-from data_common.rename_manifest import sample_id_from_reference_path
+from data_common.flat_pairing import axis_from_reference_path, sample_id_from_reference_path
 from data_common.txt_io import pad_or_resample_to_length, read_one_file_with_meta
 
 
 @dataclass(frozen=True)
 class OurDataConfig:
     """
-    Data directory layout (consistent with this project); pairing and parsing are defined by ``data_common`` + ``data*/read_official``.
+    Data directory under ``public/datasets/``; pairing via matching ``sample{i}.txt`` names.
     """
 
     root: str | Path = "."
@@ -102,16 +101,13 @@ class OurDataDataset(Dataset):
             sid = sample_id_from_reference_path(sp.reference_path, data_root=root)
             if not sid:
                 continue
-            axis = "x"
-            m = re.match(r"^sample\d+_([xyz])\.txt$", sp.reference_path.name, re.IGNORECASE)
-            if m:
-                axis = m.group(1).lower()
+            axis = axis_from_reference_path(sp.reference_path, data_root=root)
             pairs.append((sid, axis, str(sp.reference_path), str(sp.noisy_path), int(sp.value_column)))
 
         if not pairs:
             raise RuntimeError(
                 f"No paired samples under {reference_dir} / {noisy_dir} for band={cfg.band!r}. "
-                f"See data_common.pair_specs / data3/read_official.list_pair_specs_local."
+                f"Ensure matching sample{{i}}.txt exist in both reference_signal/ and noise_signal/."
             )
 
         by_sid: dict[str, list[int]] = {}

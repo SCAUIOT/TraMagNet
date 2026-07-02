@@ -16,7 +16,6 @@ from __future__ import annotations
 import argparse
 import io
 import os
-import shutil
 from pathlib import Path
 from typing import Any
 
@@ -60,26 +59,6 @@ def save_torch_checkpoint(path: str | Path, payload: dict[str, Any]) -> None:
     os.replace(tmp, p)
 
 
-def migrate_job_root_checkpoints_into_runs(out_dir: str | Path, *, log_prefix: str = "[train]") -> None:
-    """If ``--out-dir`` is ``…/<job-name>/runs`` but ``last.pt`` / ``best.pt`` remain under ``…/<job-name>/``, move them into ``runs/``."""
-    try:
-        out_path = Path(out_dir).expanduser().resolve()
-    except OSError:
-        return
-    if out_path.name != "runs":
-        return
-    parent = out_path.parent
-    for name in ("last.pt", "best.pt"):
-        src = parent / name
-        dst = out_path / name
-        if src.is_file() and not dst.is_file():
-            try:
-                shutil.move(str(src), str(dst))
-                print(f"{log_prefix} legacy layout: moved {name} into runs/", flush=True)
-            except OSError as e:
-                print(f"{log_prefix} WARN failed to migrate {name}: {e}", flush=True)
-
-
 def add_common_train_arguments(parser: argparse.ArgumentParser) -> None:
     """Same style as data1/data2: reference_signal + noise_signal + sample<id>+band_axis pairing."""
     parser.add_argument(
@@ -93,14 +72,7 @@ def add_common_train_arguments(parser: argparse.ArgumentParser) -> None:
         type=str,
         default=None,
         dest="data_roots",
-        help="Comma-separated data roots (e.g. data1,data3,data4); requires --split-manifest for pooled training.",
-    )
-    parser.add_argument(
-        "--split-manifest",
-        type=str,
-        default=None,
-        dest="split_manifest",
-        help="Pooled split JSON (ztest5 default: splits/ztest5_data134_manifest.json).",
+        help="Comma-separated data roots (e.g. data1,data3,data4); split is computed inline from seed/train_ratio.",
     )
     parser.add_argument(
         "--pool-tag",
@@ -111,9 +83,11 @@ def add_common_train_arguments(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument(
         "--reference-subdir",
+        "--reference-subdir",
         type=str,
         default="reference_signal",
-        help="reference signal subdirectory name (relative to data-root).",
+        dest="reference_subdir",
+        help="Reference signal subdirectory name (relative to data-root).",
     )
     parser.add_argument(
         "--noisy-subdir",

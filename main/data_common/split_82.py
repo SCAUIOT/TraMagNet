@@ -15,7 +15,7 @@ from typing import Any, Literal
 
 from data_common.our_data_split import build_cv_split_manifest, write_cv_split_manifest
 from data_common.pair_specs import list_pair_specs
-from data_common.rename_manifest import sample_id_from_reference_path
+from data_common.flat_pairing import sample_id_from_reference_path
 
 MANIFEST_KIND = "single_dataset_82"
 SCHEMA_VERSION = 1
@@ -342,8 +342,8 @@ def build_eval_segment_keys(
     )
     keys: set[tuple[str, str]] = set()
     for sp in specs:
-        m = _REFERENCE_SID_RE.match(sp.reference_path.name)
-        if not m or m.group(1) not in chosen_sids:
+        sid = sample_id_from_reference_path(sp.reference_path, data_root=root)
+        if not sid or sid not in chosen_sids:
             continue
         ch = _channel_tag_for_pair(value_column=int(sp.value_column), noisy_path=sp.noisy_path)
         keys.add((sp.noisy_path.name, ch))

@@ -253,8 +253,7 @@ def resolve_inference_ckpts(
     tried = ", ".join(str(p) for p in run_candidates)
     raise FileNotFoundError(
         f"No usable checkpoint (best.pt / last.pt, prefer={prefer!r}). Tried: {tried}."
-        " If weights are under a ztest5 grid, check TraMagNet/output/ztest5_TraMagNet_grid for task dirs."
-        " Or use --job-name data3_4u_msestft_2_8_randz_e1000 and --runs-dir pointing at that job's runs/."
+        " Use --runs-dir pointing at output/<pool>/runs (e.g. TraMagNet/output/data134/runs)."
     ) from last_err
 
 

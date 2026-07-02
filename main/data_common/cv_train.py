@@ -3,15 +3,13 @@
 from __future__ import annotations
 
 import argparse
-import re
 from pathlib import Path
 from typing import Callable, TypeVar
 
 from data_common.our_data_split import build_cv_split_manifest, write_cv_split_manifest
 from data_common.pair_specs import list_pair_specs
+from data_common.flat_pairing import sample_id_from_reference_path
 from data_common.viz_split import BooleanOptionalAction
-
-_reference_RE = re.compile(r"^sample(\d+)_([xyz])\.txt$", re.IGNORECASE)
 
 T = TypeVar("T")
 
@@ -120,9 +118,9 @@ def collect_sorted_sample_ids(
     )
     sids: set[str] = set()
     for sp in specs:
-        m = _reference_RE.match(sp.reference_path.name)
-        if m:
-            sids.add(m.group(1))
+        sid = sample_id_from_reference_path(sp.reference_path, data_root=root)
+        if sid:
+            sids.add(sid)
     return sorted(sids, key=lambda s: int(s))
 
 

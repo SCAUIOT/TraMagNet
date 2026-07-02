@@ -41,7 +41,7 @@ class Discriminator(nn.Module):
     PatchGAN discriminator for 1D denoising.
 
     Inputs:
-        reference/fake : (B,1,T)
+        clean/fake : (B,1,T)
         noisy      : (B,1,T)
 
     Outputs:

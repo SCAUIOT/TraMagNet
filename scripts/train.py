@@ -21,7 +21,7 @@ def main() -> None:
     args = p.parse_args()
     mapping = {
         "tramagnet": MAIN / "TraMagNet" / "train.py",
-        "dncnn": MAIN / "cnn" / "train.py",
+        "dncnn": MAIN / "DnCNN" / "train.py",
         "dncnn_ablation": ROOT / "ablation" / "dncnn_only" / "train.py",
         "unet_ablation": ROOT / "ablation" / "unet_single" / "train.py",
     }

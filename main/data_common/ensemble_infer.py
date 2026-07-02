@@ -32,7 +32,7 @@ def load_unet_ensemble(
     gan_generator: bool = False,
 ) -> list[UNetMember]:
     """Load TraMagNet UNet ensemble (``gan_generator=True`` reads ``generator`` key)."""
-    from models.unet import UNet, complete_unet_state_dict, infer_decoder_outputs_residual
+    from models.unet import UNet, complete_unet_state_dict
 
     members: list[UNetMember] = []
     for p in ckpt_paths:
@@ -49,7 +49,6 @@ def load_unet_ensemble(
             sd = payload
         model = UNet().to(device)
         model.load_state_dict(complete_unet_state_dict(model, sd), strict=True)
-        model.decoder_outputs_residual = infer_decoder_outputs_residual(sd, extra)
         model.eval()
         members.append(UNetMember(model=model))
     return members
@@ -90,8 +89,8 @@ def unet_ensemble_forward(
     return acc / float(n)
 
 
-def load_dncnn_ensemble(ckpt_paths: list[Path] | tuple[Path, ...], device: torch.device, model_args) -> list[torch.nn.Module]:
-    from models.dncnn_1d import DnCNN1D, dncnn_config_from_argparse
+def load_DnCNN_ensemble(ckpt_paths: list[Path] | tuple[Path, ...], device: torch.device, model_args) -> list[torch.nn.Module]:
+    from models.DnCNN_1d import DnCNN1D, DnCNN_config_from_argparse
 
     models: list[torch.nn.Module] = []
     for p in ckpt_paths:
@@ -100,7 +99,7 @@ def load_dncnn_ensemble(ckpt_paths: list[Path] | tuple[Path, ...], device: torch
             sd = payload["model"]
         else:
             sd = payload
-        model = DnCNN1D(dncnn_config_from_argparse(model_args)).to(device)
+        model = DnCNN1D(DnCNN_config_from_argparse(model_args)).to(device)
         model.load_state_dict(sd, strict=True)
         model.eval()
         models.append(model)

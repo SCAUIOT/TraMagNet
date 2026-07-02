@@ -12,7 +12,7 @@ if str(_REPO) not in sys.path:
 
 from data_common.viz_export import save_triplet_figure
 from data.our_data_dataset import OurDataConfig, OurDataDataset
-from models.dncnn_1d import DnCNN1D, dncnn_config_from_argparse
+from models.DnCNN_1d import DnCNN1D, DnCNN_config_from_argparse
 
 
 def pick_device(preferred: str) -> torch.device:
@@ -73,9 +73,7 @@ def main() -> None:
     p.add_argument("--split", type=str, default="test", choices=("test", "train"))
     p.add_argument("--idx", type=int, default=0)
     p.add_argument("--device", type=str, default="cpu", choices=("cpu", "cuda"))
-    p.add_argument("--depth", type=int, default=18)
     p.add_argument("--features", type=int, default=64)
-    p.add_argument("--legacy-plain", action="store_true", help="Match the legacy single-stack DnCNN used during training.")
     p.add_argument("--middle-depth", type=int, default=10)
     p.add_argument("--num-residual", type=int, default=5, dest="num_residual")
     p.add_argument("--use-attention", action="store_true", help="Align with a model trained with attention enabled.")
@@ -104,14 +102,14 @@ def main() -> None:
         action=argparse.BooleanOptionalAction,
         default=False,
         dest="match_noisy_scale",
-        help="Affine-align noisy to reference (off by default to avoid test leakage).",
+        help="Affine-align noisy to clean (off by default to avoid test leakage).",
     )
     p.add_argument(
         "--zscore-using-reference",
         action=argparse.BooleanOptionalAction,
         default=False,
         dest="zscore_using_reference",
-        help="Z-score using reference statistics (off by default; noisy_sample normalization is recommended).",
+        help="Z-score using clean statistics (off by default; noisy_sample normalization is recommended).",
     )
     args = p.parse_args()
     if args.use_attention and args.no_attention:
@@ -142,10 +140,10 @@ def main() -> None:
     i = int(args.idx) % len(ds)
     item = ds[i]
     noisy = item["noisy"].unsqueeze(0).to(device)  # (1,1,T)
-    reference = item["reference"].unsqueeze(0).to(device)
+    clean = item["reference"].unsqueeze(0).to(device)
     key = str(item.get("key", f"idx_{i}"))
 
-    model = DnCNN1D(dncnn_config_from_argparse(args)).to(device)
+    model = DnCNN1D(DnCNN_config_from_argparse(args)).to(device)
     model.eval()
     load_checkpoint(model, Path(args.ckpt), device)
 
@@ -154,7 +152,7 @@ def main() -> None:
 
     n = noisy.squeeze().detach().cpu().numpy()
     d = denoised.squeeze().detach().cpu().numpy()
-    c = reference.squeeze().detach().cpu().numpy()
+    c = clean.squeeze().detach().cpu().numpy()
     if args.save_plot:
         out = Path(args.save_plot)
     else:

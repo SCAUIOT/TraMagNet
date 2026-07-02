@@ -9,7 +9,6 @@ from .unet import (
     UNET_LATENT_LENGTH,
     UNet,
     complete_unet_state_dict,
-    migrate_unet_state_dict,
     sample_latent,
 )
 from .unet_loss import (
@@ -29,7 +28,6 @@ __all__ = [
     "UNet",
     "complete_unet_state_dict",
     "masked_l1_mean",
-    "migrate_unet_state_dict",
     "mse_time_frequency_loss",
     "multi_scale_stft_mag_l1",
     "sample_latent",

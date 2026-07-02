@@ -7,9 +7,19 @@ import shutil
 from pathlib import Path
 from typing import Sequence, TypeVar
 
-from data_common.ztest5_paths import ztest5_lookup_data_tags
-
 T = TypeVar("T")
+
+_POOLED_OUTPUT_TAGS = frozenset({"data1", "data3", "data4"})
+
+
+def output_run_lookup_tags(data_tag: str) -> tuple[str, ...]:
+    """Map CLI pool tag to ``output/<tag>/runs`` candidates (single dataset also tries pooled data134)."""
+    t = str(data_tag).strip().lower()
+    if t == "data134":
+        return ("data134", "data1", "data3", "data4")
+    if t in _POOLED_OUTPUT_TAGS:
+        return (t, "data134")
+    return (t,)
 
 
 def empty_viz_output_dirs(*dirs: Path) -> None:
@@ -37,10 +47,10 @@ def checkpoint_run_candidates(*, repo: Path, data_tag: str, nn_dir: Path | None 
 
     Prefer ``<nn_dir>/output/<tag>/runs`` (training output under each method subdir), then cwd
     ``output/<tag>/runs``, repo ``<repo>/output/<tag>/runs``, ``<nn_dir>/runs``, ``./runs``.
-    For data1/data3/data4 also try pooled ``data134`` (matches ztest5 job naming).
+    For data1/data3/data4 also try pooled ``data134``.
     """
     raw: list[Path] = []
-    for tag in ztest5_lookup_data_tags(data_tag):
+    for tag in output_run_lookup_tags(data_tag):
         if nn_dir is not None:
             raw.append(nn_dir / "output" / tag / "runs")
         raw.extend(

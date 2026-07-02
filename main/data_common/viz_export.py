@@ -74,7 +74,7 @@ def save_triplet_figure(
 
 def save_gan_compare_figure(
     out_path: Path,
-    reference: np.ndarray,
+    clean: np.ndarray,
     noisy: np.ndarray,
     den_orig: np.ndarray,
     den_quant: np.ndarray,
@@ -87,7 +87,7 @@ def save_gan_compare_figure(
     xlabel: str = "Sample index",
     ylabel: str = "Amplitude (preprocessed)",
 ) -> None:
-    """Six-panel comparison (3 rows × 2 cols): reference|noisy / original|quantized / compressed|finetuned."""
+    """Six-panel comparison (3 rows × 2 cols): clean|noisy / original|quantized / compressed|finetuned."""
     import matplotlib
 
     matplotlib.use("Agg")
@@ -95,7 +95,7 @@ def save_gan_compare_figure(
 
     _configure_matplotlib()
     arrays = [
-        np.asarray(reference, dtype=np.float64).reshape(-1),
+        np.asarray(clean, dtype=np.float64).reshape(-1),
         np.asarray(noisy, dtype=np.float64).reshape(-1),
         np.asarray(den_orig, dtype=np.float64).reshape(-1),
         np.asarray(den_quant, dtype=np.float64).reshape(-1),
@@ -105,7 +105,7 @@ def save_gan_compare_figure(
     m = min(int(a.size) for a in arrays)
     arrays = [a[:m] for a in arrays]
     t = np.arange(m)
-    labels = ("Reference", "Noisy", "Original denoised", "Quantized denoised", "Compressed denoised", "Finetuned denoised")
+    labels = ("Clean", "Noisy", "Original denoised", "Quantized denoised", "Compressed denoised", "Finetuned denoised")
     colors = ("tab:blue", "tab:orange", "tab:green", "tab:red", "tab:purple", "tab:brown")
     fig, axes = plt.subplots(3, 2, figsize=figsize, sharex=True)
     axes_flat = axes.ravel()
@@ -128,7 +128,7 @@ def save_gan_compare_figure(
 
 def save_dual_column_triplet_figure(
     out_path: Path,
-    reference: np.ndarray,
+    clean: np.ndarray,
     noisy_a: np.ndarray,
     denoised_a: np.ndarray,
     noisy_b: np.ndarray,
@@ -137,24 +137,24 @@ def save_dual_column_triplet_figure(
     title: str = "",
     reference_b: np.ndarray | None = None,
 ) -> None:
-    """data3-style dual amplitude columns: two stacked subplots; same reference by default; ``reference_b`` sets reference ref for column 4."""
+    """data3-style dual amplitude columns: two stacked subplots; same clean by default; ``reference_b`` sets clean ref for column 4."""
     import matplotlib
 
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
     _configure_matplotlib()
-    reference2 = reference if reference_b is None else reference_b
+    clean2 = clean if reference_b is None else reference_b
     m = min(
-        int(reference.size),
-        int(np.asarray(reference2).size),
+        int(clean.size),
+        int(np.asarray(clean2).size),
         int(noisy_a.size),
         int(denoised_a.size),
         int(noisy_b.size),
         int(denoised_b.size),
     )
-    reference = np.asarray(reference, dtype=np.float64).reshape(-1)[:m]
-    reference2 = np.asarray(reference2, dtype=np.float64).reshape(-1)[:m]
+    clean = np.asarray(clean, dtype=np.float64).reshape(-1)[:m]
+    clean2 = np.asarray(clean2, dtype=np.float64).reshape(-1)[:m]
     noisy_a = np.asarray(noisy_a, dtype=np.float64).reshape(-1)[:m]
     denoised_a = np.asarray(denoised_a, dtype=np.float64).reshape(-1)[:m]
     noisy_b = np.asarray(noisy_b, dtype=np.float64).reshape(-1)[:m]
@@ -162,12 +162,12 @@ def save_dual_column_triplet_figure(
     t = np.arange(m)
     fig, axes = plt.subplots(2, 1, figsize=(10, 7), sharex=True)
     for ax, n_raw, d_raw, cref, subtitle in (
-        (axes[0], noisy_a, denoised_a, reference, "Noisy / Denoised / Reference — column 3"),
-        (axes[1], noisy_b, denoised_b, reference2, "Noisy / Denoised / Reference — column 4"),
+        (axes[0], noisy_a, denoised_a, clean, "Noisy / Denoised / Clean — column 3"),
+        (axes[1], noisy_b, denoised_b, clean2, "Noisy / Denoised / Clean — column 4"),
     ):
         ax.plot(t, n_raw, linewidth=0.9, color="tab:orange", label="Noisy")
         ax.plot(t, d_raw, linewidth=0.9, color="tab:green", label="Denoised")
-        ax.plot(t, cref, linewidth=0.9, color="tab:blue", label="Reference")
+        ax.plot(t, cref, linewidth=0.9, color="tab:blue", label="Clean")
         ax.grid(True, alpha=0.25)
         ax.set_ylabel("Amplitude")
         ax.legend(loc="best")
@@ -190,7 +190,7 @@ def main_cli(argv: Optional[list[str]] = None, *, default_data_root: Optional[Pa
         default="" if default_data_root is None else str(default_data_root),
         help="Data root (with reference_signal / noise_signal); default is current dataN dir when omitted",
     )
-    p.add_argument("--reference-subdir", type=str, default="reference_signal")
+    p.add_argument("--reference-subdir", type=str, default="reference_signal", dest="reference_subdir")
     p.add_argument("--noisy-subdir", type=str, default="noise_signal")
     p.add_argument("--band", type=str, default="low")
     p.add_argument("--pair-index", type=int, default=0, dest="pair_index")
